@@ -1,0 +1,43 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: pbccrc-parser
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://127.0.0.1:3306/pbccrc?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    password: ${PBCCRC_DB_PWD:}
+  jackson:
+    default-property-inclusion: non_null
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+
+mybatis:
+  configuration:
+    map-underscore-to-camel-case: true
+    jdbc-type-for-null: 'null'
+    call-setters-on-nulls: true
+  type-aliases-package: com.workbuddy.pbccrc.model.entity
+
+pbccrc:
+  redis:
+    address: redis://127.0.0.1:6379
+    password: ${PBCCRC_REDIS_PWD:}
+    database: 1
+    submit-lock-ttl-days: 7
+  parse:
+    max-retry: 5
+    heartbeat-timeout-minutes: 30
+    parse-timeout-minutes: 20
+    dead-letter-scan-cron: "0 */5 * * * *"
+  security:
+    enabled: ${PBCCRC_SECURITY_ENABLED:false}
+    token: ${PBCCRC_AUTH_TOKEN:}
+    operator-header: X-Operator
+
+logging:
+  level:
+    com.workbuddy.pbccrc: DEBUG
+    org.mybatis: INFO

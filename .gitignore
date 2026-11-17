@@ -1,0 +1,21 @@
+# IDE / editor
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# Build output
+target/
+out/
+*.class
+*.jar
+*.war
+
+# Logs & runtime
+*.log
+*.pid
+
+# OS
+.DS_Store
+Thumbs.db
