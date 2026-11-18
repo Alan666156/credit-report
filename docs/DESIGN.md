@@ -226,8 +226,9 @@ PENDING ──抢占──> PARSING ──成功──> SUCCESS
 - 本机 MySQL 需 `--no-defaults` 绕开 `my.ini` 客户端段误配的 `server-id=1`。
 - Redis 为必需依赖，无开关：地址 `pbccrc.redis.address`（默认 `redis://127.0.0.1:6379`）、逻辑库 `pbccrc.redis.database`（默认 1）；口令通过 `PBCCRC_REDIS_PWD` 提供（不落盘）。Redis 不可用则应用启动或相关操作直接失败。
 - 构建：`mvn package`；jar：`target/credit-report-1.0.0-SNAPSHOT.jar`
-- 测试：`mvn test`（42 个用例）。分层见 `REVIEW.md` 第三节：E2E 真实报告全流水线（`FullReportParseTest`，7 例）、
+- 测试：`mvn test`（44 个用例）。分层见 `REVIEW.md` 第三节：E2E 真实报告全流水线（`FullReportParseTest`，7 例）、
   真实 `submit()` 链路幂等（`SubmitServiceImplIdempotencyTest`，7 例）、解析锁语义（`ParseServiceImplLockTest`，2 例）、
+  公共记录未识别篇章留痕（`PublicRecordParserTest`，2 例）、
   H2 状态机 CAS（`ReportStateMachineTest`，4 例）、55 条正则全编译与抽取（`RegexEngineTest`，5 例）等。
 - 完整验证入口：`bash scripts/verify.sh`（`mvn clean test` + `mvn javadoc:javadoc`，打印证据块与结论）。
 - 管理端前端（`admin-web`）：鉴权开启后前端从 `localStorage.pbccrc_token` 读取 token 并统一加
@@ -239,14 +240,18 @@ PENDING ──抢占──> PARSING ──成功──> SUCCESS
 2. **公共记录异常样本**：当前仅有「系统中没有」类样本，其余先原文留痕，样本补齐后细化字段。
 3. **migration.sql**：待 Alan 备份后在执行（主表状态字段）。执行前 `findRecentForUpdate` 没有复合索引。
 4. **公共记录分类的兜底分支**：`PublicRecordParser.classify` 是 if/else-if 链，命中不到任何关键词的
-   段落会被静默丢弃（不告警）。样本补齐后应改为「未知类别进原文留痕表」。
-5. **`t_pbccrc_customer_credit` 下线**：本服务已不读不写，是否 DROP 待业务确认。
+   段落目前**逐条打 `WARN` 日志**（含 `reportId`、记录序号与 200 字原文摘要，并追加一条「共 N 条未识别」
+   汇总行），原文同时完整保留在 `common_record_detail`，不丢数据、不再静默。后续与第 5 项（客户概要表
+   规则流程）一起处理：未识别段落改为落独立的原文留痕表，按样本反推缺失类别与规则。
+   > 注意：日志只用于回收样本，不能作为数据兜底——排障时不要以日志代替原文表。
+5. **`t_pbccrc_customer_credit` 下线**：本服务已不读不写，是否 DROP 待业务确认；与第 4 项的规则流程
+   一并设计（若恢复该表写入，需同时定义未知类别留痕表）。
 
 ## 10. 变更记录
 
 ### 2026-11-18 评审整改
 
-对应评审报告 `docs/CODE-REVIEW-2026-11-18.md`。基线由「E2E 2 例失败」转为全绿（42 例全通过），
+对应评审报告 `docs/CODE-REVIEW-2026-11-18.md`。基线由「E2E 2 例失败」转为全绿（44 例全通过），
 **未修改任何既有断言**，失败是靠修代码转绿的。
 
 | 类别 | 改动 | 位置 |
@@ -264,6 +269,7 @@ PENDING ──抢占──> PARSING ──成功──> SUCCESS
 | P2 | token 常量时间比较 | `AuthFilter` |
 | P2 | 测试 DDL 与 `db/schema.sql` 对齐（datetime / int / text） | `ReportStateMachineTest` |
 | P2 | 管理端统一注入 `X-Auth-Token` | `admin-web/src/api/index.js` |
+| 观测 | 公共记录未识别类别逐条 `WARN`（reportId + 序号 + 200 字摘要）并汇总条数，原文仍整体保留在 `common_record_detail`；不做静默丢弃，也不写入 `error_msg` | `PublicRecordParser` |
 | 清理 | 删除未被引用的 `CustomerCredit` 实体 | `model/entity` |
 
 
