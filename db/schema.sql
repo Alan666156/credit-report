@@ -1,4 +1,19 @@
 
+-- ============================================================================
+-- 人行征信报告解析服务 —— 数据库完整基线（mysqldump 导出结构）
+--
+-- 【新库初始化只用本文件】本文件已包含全部演进：
+--   · 异步状态机四列（status / retry_count / heartbeat_time / content_hash）
+--   · 提交幂等索引 IDX_PBCCRC_CUSTOMER_NAME_ID (customer_name, customer_id_card)
+--   · 状态扫描索引 IDX_PBCCRC_STATUS (status)
+--   以上原本只存在于 db/migration.sql，导致按旧版 schema.sql 建库后
+--   ReportMapper 全部查询报 Unknown column 'status'，且 findRecentForUpdate
+--   的 SELECT ... FOR UPDATE 因缺索引退化为全表加锁。
+--
+-- 【存量库升级】不要用本文件重建，改为执行 db/migration.sql（幂等 ALTER）；
+--   若目标库已含这四列，跳过该脚本即可。
+-- ============================================================================
+
 /*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
 /*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
 /*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
@@ -338,9 +353,15 @@ CREATE TABLE `t_pbccrc_report` (
   `app_no` varchar(50) CHARACTER SET utf8 COLLATE utf8_general_ci DEFAULT NULL COMMENT '申请件编号',
   `customer_id_card_bak` varchar(255) CHARACTER SET utf8 COLLATE utf8_general_ci DEFAULT NULL COMMENT '身份证',
   `customer_name_bak` varchar(255) CHARACTER SET utf8 COLLATE utf8_general_ci DEFAULT NULL COMMENT '姓名',
+  `status` varchar(20) NOT NULL DEFAULT 'PENDING' COMMENT '解析状态:PENDING/PARSING/SUCCESS/FAILED',
+  `retry_count` int NOT NULL DEFAULT '0' COMMENT '解析重试次数',
+  `heartbeat_time` datetime DEFAULT NULL COMMENT '解析心跳时间,识别卡死',
+  `content_hash` varchar(64) DEFAULT NULL COMMENT '报告正文全文MD5，仅作内容完整性校验（不参与提交幂等）',
   PRIMARY KEY (`id`) USING BTREE,
   KEY `IDX_PBCCRC_REPORT_CUSTOMER_ID` (`customer_id_card`) USING BTREE,
-  KEY `IDX_PBCCRC_CREATE_TIME` (`create_time`) USING BTREE
+  KEY `IDX_PBCCRC_CREATE_TIME` (`create_time`) USING BTREE,
+  KEY `IDX_PBCCRC_STATUS` (`status`) USING BTREE,
+  KEY `IDX_PBCCRC_CUSTOMER_NAME_ID` (`customer_name`,`customer_id_card`) USING BTREE
 ) ENGINE=InnoDB AUTO_INCREMENT=4 DEFAULT CHARSET=utf8mb3 ROW_FORMAT=DYNAMIC COMMENT='人行征信报告';
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
@@ -392,7 +413,7 @@ CREATE TABLE `t_pbccrc_report_querylog` (
   `id` int NOT NULL AUTO_INCREMENT COMMENT '主键id',
   `customer_name` varchar(255) CHARACTER SET utf8 COLLATE utf8_general_ci NOT NULL COMMENT '客户姓名',
   `customer_id_card` varchar(255) CHARACTER SET utf8 COLLATE utf8_general_ci NOT NULL COMMENT '客户身份证号',
-  `content_hash` varchar(64) DEFAULT NULL COMMENT '提交幂等键：报告正文全文MD5，与姓名证件号共同去重',
+  `content_hash` varchar(64) DEFAULT NULL COMMENT '报告正文全文MD5，仅作内容完整性校验（不参与提交幂等）',
   `create_time` date NOT NULL COMMENT '创建时间',
   `report_id` int DEFAULT NULL COMMENT '人行征信报告id',
   `customer_id_card_bak` varchar(255) CHARACTER SET utf8 COLLATE utf8_general_ci DEFAULT NULL COMMENT '身份证',
