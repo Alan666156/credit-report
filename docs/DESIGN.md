@@ -1,6 +1,6 @@
 # 人行个人征信报告 HTML 解析入库系统 — 设计文档
 
-> 工程：`pbccrc-parser`　版本：1.0.0-SNAPSHOT　Java 21 / Spring Boot 3.3.5 / MyBatis 3.0.3
+> 工程：`credit-report`　版本：1.0.0-SNAPSHOT　Java 21 / Spring Boot 3.3.5 / MyBatis 3.0.3
 
 ## 1. 目标与范围
 
@@ -193,7 +193,7 @@ PENDING ──抢占──> PARSING ──成功──> SUCCESS
 - 数据库：`127.0.0.1:3306/pbccrc`，账号 `root`，口令运行时通过环境变量 `PBCCRC_DB_PWD` 提供（不落盘）。
 - 本机 MySQL 需 `--no-defaults` 绕开 `my.ini` 客户端段误配的 `server-id=1`。
 - Redis 为必需依赖，无开关：地址 `pbccrc.redis.address`（默认 `redis://127.0.0.1:6379`）、逻辑库 `pbccrc.redis.database`（默认 1）；口令通过 `PBCCRC_REDIS_PWD` 提供（不落盘）。Redis 不可用则应用启动或相关操作直接失败。
-- 构建：`mvn package`；jar：`target/pbccrc-parser-1.0.0-SNAPSHOT.jar`
+- 构建：`mvn package`；jar：`target/credit-report-1.0.0-SNAPSHOT.jar`
 - 测试：`mvn test`（9 个测试：真实 HTML 全流水线解析、55 条正则全编译、H2 明细写入验证）。
 
 ## 9. 待复核 / 待补项
