@@ -102,6 +102,25 @@ UPDATE t_pbccrc_report SET status = 'SUCCESS' WHERE status = 'PENDING';
 
 `ValueConverter.convert` 负责金额（去千分位）、日期、标志位（是/否）等归一化。
 
+### 4.4 规则加载期的回溯风险校验（`RegexSafetyChecker`）
+
+规则是人工维护的，一条写错的正则就能把解析线程钉死；而 `java.util.regex` 既不支持匹配超时，也不响应线程中断（见 §9.6），跑飞之后没有安全的止损手段。因此把检查放在加载期：`RuleCache.build` 在 `Pattern.compile` 之前先做结构扫描。
+
+| 检查项 | 判定 | 级别 | 触发示例 |
+|---|---|---|---|
+| `NESTED_REPEAT` | 被重复修饰的组内部含无界量词，且外层为无上界或重复 ≥3 次 | 阻断加载 | `(a+)+`、`(\d*)*`、`(.*a){8}` |
+| `EMPTY_REPEAT` | 被重复修饰的组可匹配空串，且外层为无上界或重复 ≥10 次 | 阻断加载 | `(a?)+`、`(a\|)*` |
+| `MULTI_WILDCARD` | 同一模式内 ≥2 处 `.*`／`.+` | 仅告警 | `发放的.*（(.*)）` |
+
+阈值的依据是实测（统计 `charAt` 次数，输入 29 个字符）：`(.*a){2}` 1.7 万次、`{4}` 64 万次、`{6}` 997 万次、`{8}` 7891 万次。有界重复到 3 次就足以在单条短文本上烧掉数百毫秒，所以嵌套重复的阻断线定在 3，而不是 10。
+
+需要如实说明两点：
+
+1. HotSpot 对部分经典形态（如 `(a+)+`）有内建优化，同一输入只产生千余次读取，实测并不爆炸。检测仍按结构判定——优化是实现细节，规则移植、JDK 升级或模式稍改都可能让它失效，宁可拦住等价的坏写法。
+2. 校验只做结构启发式，不做完整语法分析（语法错误仍由 `Pattern.compile` 报）；字符类与转义内的元字符会被跳过，零宽断言内部的分组照常检查。
+
+现网 55 条规则全部通过该校验，其中 `CURRENCY_TYPE`、`CREDIT_TYPE` 命中 `MULTI_WILDCARD` 告警（各 2 处 `.*`），不影响加载。
+
 ## 5. 解析流程
 
 1. **切块**：`BlockSplitter.split(html)` 用 Jsoup 把报告切成六部分——报告头、信息概要表、信贷明细（多个 `ol.olstyle`，每个含 `<li>` 自然语言描述）、公共记录、查询记录（`tr` 表格）、说明。
@@ -226,9 +245,9 @@ PENDING ──抢占──> PARSING ──成功──> SUCCESS
 - 本机 MySQL 需 `--no-defaults` 绕开 `my.ini` 客户端段误配的 `server-id=1`。
 - Redis 为必需依赖，无开关：地址 `pbccrc.redis.address`（默认 `redis://127.0.0.1:6379`）、逻辑库 `pbccrc.redis.database`（默认 1）；口令通过 `PBCCRC_REDIS_PWD` 提供（不落盘）。Redis 不可用则应用启动或相关操作直接失败。
 - 构建：`mvn package`；jar：`target/credit-report-1.0.0-SNAPSHOT.jar`
-- 测试：`mvn test`（44 个用例）。分层见 `REVIEW.md` 第三节：E2E 真实报告全流水线（`FullReportParseTest`，7 例）、
+- 测试：`mvn test`（55 个用例）。分层见 `REVIEW.md` 第三节：E2E 真实报告全流水线（`FullReportParseTest`，7 例）、
   真实 `submit()` 链路幂等（`SubmitServiceImplIdempotencyTest`，7 例）、解析锁语义（`ParseServiceImplLockTest`，2 例）、
-  公共记录未识别篇章留痕（`PublicRecordParserTest`，2 例）、
+  公共记录未识别篇章留痕（`PublicRecordParserTest`，2 例）、正则回溯风险校验（`RegexSafetyCheckerTest`，11 例）、
   H2 状态机 CAS（`ReportStateMachineTest`，4 例）、55 条正则全编译与抽取（`RegexEngineTest`，5 例）等。
 - 完整验证入口：`bash scripts/verify.sh`（`mvn clean test` + `mvn javadoc:javadoc`，打印证据块与结论）。
 - 管理端前端（`admin-web`）：鉴权开启后前端从 `localStorage.pbccrc_token` 读取 token 并统一加
@@ -246,6 +265,12 @@ PENDING ──抢占──> PARSING ──成功──> SUCCESS
    > 注意：日志只用于回收样本，不能作为数据兜底——排障时不要以日志代替原文表。
 5. **`t_pbccrc_customer_credit` 下线**：本服务已不读不写，是否 DROP 待业务确认；与第 4 项的规则流程
    一并设计（若恢复该表写入，需同时定义未知类别留痕表）。
+6. **正则执行仍不可中断（已做加载期预防，未做运行期隔离）**：卡点在 `RegexEngine.extract`
+   （`RegexEngine.java:39-57`）的 `matcher.find()`；`ParseServiceImpl` 的看门狗（`:147-169`）能按
+   `ParseDeadline` 判出卡死并标记失败、发告警，但 `finally`（`:212-215`）只停看门狗，**从不中断解析线程**，
+   且 `java.util.regex` 本身不响应中断。现在的防线是 §4.4 的加载期拒绝，运行期仍有残余风险。
+   若后续需要彻底止损，只有两条路：换 RE2/J（线性时间，需先扫现有规则是否用到反向引用/环视），
+   或把正则执行放到独立进程、超时 `kill`。
 
 ## 10. 变更记录
 
@@ -269,6 +294,7 @@ PENDING ──抢占──> PARSING ──成功──> SUCCESS
 | P2 | token 常量时间比较 | `AuthFilter` |
 | P2 | 测试 DDL 与 `db/schema.sql` 对齐（datetime / int / text） | `ReportStateMachineTest` |
 | P2 | 管理端统一注入 `X-Auth-Token` | `admin-web/src/api/index.js` |
+| 加固 | 规则加载期做回溯风险结构校验：嵌套重复／可空重复拒绝加载，多处通配只告警（阈值按实测 reads 定） | `RegexSafetyChecker`、`RuleCache.build` |
 | 观测 | 公共记录未识别类别逐条 `WARN`（reportId + 序号 + 200 字摘要）并汇总条数，原文仍整体保留在 `common_record_detail`；不做静默丢弃，也不写入 `error_msg` | `PublicRecordParser` |
 | 清理 | 删除未被引用的 `CustomerCredit` 实体 | `model/entity` |
 
