@@ -3,6 +3,8 @@ package com.workbuddy.pbccrc.parser;
 import com.workbuddy.pbccrc.engine.FieldRule;
 import com.workbuddy.pbccrc.engine.RuleCacheHolder;
 import com.workbuddy.pbccrc.engine.RegexEngine;
+import com.workbuddy.pbccrc.model.entity.AssetDisposal;
+import com.workbuddy.pbccrc.model.entity.Compensate;
 import com.workbuddy.pbccrc.model.entity.CreditCardRecord;
 import com.workbuddy.pbccrc.model.entity.CreditRecord;
 import com.workbuddy.pbccrc.model.entity.Guarantee;
@@ -17,8 +19,9 @@ import java.util.Map;
 /**
  * 信贷明细解析器。
  *
- * <p>按 span.h1 标题判断信用卡、购房贷款或其他贷款类型，逐条 li 套用配置正则抽取字段，
- * 回填信用卡与贷款明细，并额外生成一条原始信贷记录留原文。逾期分组由 li 的 group 判断。</p>
+ * <p>按 span.h1 标题分流：信用卡、购房贷款、其他贷款逐条 li 套用配置正则抽取字段，回填信用卡与
+ * 贷款明细，并额外生成一条原始信贷记录留原文；「为他人担保」「资产处置」「保证人代偿」三类
+ * 各自归入担保、资产处置、代偿表。逾期分组由 li 的 group 判断。</p>
  *
  * @author Alan
  * @date 2026-11-17
@@ -54,6 +57,14 @@ public class CreditDetailParser {
             }
             if (title.contains("为他人担保")) {
                 parseGuarantees(ctx, block);
+                continue;
+            }
+            if (title.contains("资产处置")) {
+                parseAssetDisposals(ctx, block);
+                continue;
+            }
+            if (title.contains("代偿")) {
+                parseCompensates(ctx, block);
                 continue;
             }
             boolean card = title.contains("信用卡");
@@ -106,6 +117,63 @@ public class CreditDetailParser {
                 } catch (RuntimeException e) {
                     ctx.warn("信贷明细第 " + seq + " 条解析失败: " + e.getMessage());
                 }
+            }
+        }
+    }
+
+    /**
+     * 将「资产处置信息」块的每条 li 解析为资产处置明细。
+     *
+     * <p>该块属于信贷记录区（不在公共记录区），早先只识别信用卡/贷款/担保四类标题，
+     * 于是整块被当成「标题未识别」跳过——真实记录进不了 {@code t_pbccrc_asset_disposal}。
+     * 这里按 {@link ParseType#ASSET_DISPOSAL} 的配置规则抽取字段并回填。</p>
+     *
+     * @param ctx   解析上下文
+     * @param block 资产处置信息块
+     */
+    private void parseAssetDisposals(ParseContext ctx, BlockSplitter.CreditBlock block) {
+        List<FieldRule> fieldRules = rules.of(ParseType.ASSET_DISPOSAL);
+        int seq = 0;
+        for (BlockSplitter.LiItem item : block.getItems()) {
+            seq++;
+            try {
+                String text = item.getText();
+                AssetDisposal e = new AssetDisposal();
+                e.setReportId(ctx.getReportId());
+                e.setRecordNum(seq);
+                e.setContent(text);
+                BeanFillUtil.fill(e, RegexEngine.extract(text, fieldRules));
+                ctx.getAssetDisposals().add(e);
+            } catch (RuntimeException ex) {
+                ctx.warn("资产处置第 " + seq + " 条解析失败: " + ex.getMessage());
+            }
+        }
+    }
+
+    /**
+     * 将「保证人代偿信息」块的每条 li 解析为代偿明细。
+     *
+     * <p>与资产处置同理：该块此前被标题白名单漏掉而整块丢弃。按
+     * {@link ParseType#COMPENSATE} 的配置规则抽取字段并回填。</p>
+     *
+     * @param ctx   解析上下文
+     * @param block 保证人代偿信息块
+     */
+    private void parseCompensates(ParseContext ctx, BlockSplitter.CreditBlock block) {
+        List<FieldRule> fieldRules = rules.of(ParseType.COMPENSATE);
+        int seq = 0;
+        for (BlockSplitter.LiItem item : block.getItems()) {
+            seq++;
+            try {
+                String text = item.getText();
+                Compensate e = new Compensate();
+                e.setReportId(ctx.getReportId());
+                e.setRecordNum(seq);
+                e.setContent(text);
+                BeanFillUtil.fill(e, RegexEngine.extract(text, fieldRules));
+                ctx.getCompensates().add(e);
+            } catch (RuntimeException ex) {
+                ctx.warn("保证人代偿第 " + seq + " 条解析失败: " + ex.getMessage());
             }
         }
     }

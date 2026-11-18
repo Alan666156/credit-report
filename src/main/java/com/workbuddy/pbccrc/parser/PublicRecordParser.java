@@ -48,24 +48,24 @@ public class PublicRecordParser {
         String text = parts.getPublicText();
         ctx.getReport().setCommonRecordDescription(text);
         ctx.getReport().setCommonRecordDetail(text);
-        if (text == null || text.isBlank() || text.contains("系统中没有")) {
-            return;
-        }
-        int seq = 0;
-        for (String seg : Arrays.asList(text.split(DATE_SPLIT))) {
-            String s = seg.replaceAll("^[，。；;\\s]+", "").trim();
-            // 区块标题与引导文字不是记录，防止其包含的「行政处罚」等关键词被误归类
-            if (s.isEmpty() || s.equals("公共记录") || s.contains("这部分包含")) {
-                continue;
+        if (text != null && !text.isBlank() && !text.contains("系统中没有")) {
+            int seq = 0;
+            for (String seg : Arrays.asList(text.split(DATE_SPLIT))) {
+                String s = seg.replaceAll("^[，。；;\\s]+", "").trim();
+                // 区块标题与引导文字不是记录，防止其包含的「行政处罚」等关键词被误归类
+                if (s.isEmpty() || s.equals("公共记录") || s.contains("这部分包含")) {
+                    continue;
+                }
+                seq++;
+                try {
+                    classify(ctx, s, seq);
+                } catch (RuntimeException e) {
+                    ctx.warn("公共记录第 " + seq + " 条解析失败: " + e.getMessage());
+                }
             }
-            seq++;
-            try {
-                classify(ctx, s, seq);
-            } catch (RuntimeException e) {
-                ctx.warn("公共记录第 " + seq + " 条解析失败: " + e.getMessage());
-            }
         }
-        // 回填资产处置与代偿的记录条数
+        // 回填资产处置与代偿的记录条数：条数以明细列表为准，故必须放在早退分支之外，
+        // 否则「没有公共记录」的报告即使信贷区有资产处置，asset_total 也会是 null
         ctx.getReport().setAssetTotal(ctx.getAssetDisposals().size());
         ctx.getReport().setRepaymentTotal(ctx.getCompensates().size());
     }
@@ -81,11 +81,13 @@ public class PublicRecordParser {
         if (text.contains("资产处置") || text.contains("接收债权")) {
             AssetDisposal e = new AssetDisposal();
             base(ctx, e, seq);
+            e.setContent(text);
             fill(e, text, ParseType.ASSET_DISPOSAL);
             ctx.getAssetDisposals().add(e);
         } else if (text.contains("代偿")) {
             Compensate e = new Compensate();
             base(ctx, e, seq);
+            e.setContent(text);
             fill(e, text, ParseType.COMPENSATE);
             ctx.getCompensates().add(e);
         } else if (text.contains("担保")) {
@@ -93,6 +95,7 @@ public class PublicRecordParser {
                     : text.contains("担保贷款") ? ParseType.GUARANTEE_LOAN : ParseType.GUARANTEE;
             Guarantee e = new Guarantee();
             base(ctx, e, seq);
+            e.setContent(text);
             fill(e, text, type);
             e.setType(type.getDesc());
             ctx.getGuarantees().add(e);

@@ -4,10 +4,14 @@ import com.workbuddy.pbccrc.dao.RuleMapper;
 import com.workbuddy.pbccrc.engine.RuleCache;
 import com.workbuddy.pbccrc.engine.RuleCacheHolder;
 import com.workbuddy.pbccrc.engine.RuleFixtures;
+import com.workbuddy.pbccrc.model.entity.AssetDisposal;
+import com.workbuddy.pbccrc.model.entity.Compensate;
 import org.junit.jupiter.api.Test;
 
 import java.io.InputStream;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -73,5 +77,55 @@ class FullReportParseTest {
         assertTrue(ctx.getReport().getCommonRecordDescription().contains("电信欠费"));
         assertFalse(ctx.getReport().getCommonRecordDescription().contains("系统中没有"),
                 "真块不应被重复造数据的「系统中没有」覆盖");
+    }
+
+    /**
+     * 公共记录块只能取「公共记录」区块自身。
+     *
+     * <p>真实报告整份正文被最外层 table 包着，早期实现取「文档顺序第一个含公共记录且不含
+     * 系统中没有的 table」，只要报告真存在公共记录就会把整份报告当成公共记录，进而让信贷
+     * 明细被二次分类成公共记录（担保曾因此从 3 条变成 9 条）。</p>
+     */
+    @Test
+    void publicRecordTextExcludesCreditSection() throws Exception {
+        ParseContext ctx = parse();
+        String desc = ctx.getReport().getCommonRecordDescription();
+        assertNotNull(desc);
+        assertTrue(desc.startsWith("公共记录"), "公共记录文本应从区块标题开始, 实际=" + desc);
+        assertFalse(desc.contains("信用卡"), "公共记录文本不得混入信贷区内容, 实际=" + desc);
+    }
+
+    /** 资产处置与保证人代偿两块此前被信贷块标题白名单漏掉，整块明细进不了库。 */
+    @Test
+    void parsesAssetDisposalAndCompensateBlocks() throws Exception {
+        ParseContext ctx = parse();
+        assertEquals(1, ctx.getAssetDisposals().size(), "资产处置 1 条");
+        assertEquals(1, ctx.getCompensates().size(), "保证人代偿 1 条");
+
+        AssetDisposal asset = ctx.getAssetDisposals().get(0);
+        assertEquals(new BigDecimal("8000002"), asset.getAmount(), "资产处置债权金额");
+        assertEquals(new BigDecimal("80002"), asset.getBalance(), "资产处置余额");
+        assertEquals(LocalDateTime.of(2018, 1, 10, 0, 0), asset.getDisposeDate());
+
+        Compensate compensate = ctx.getCompensates().get(0);
+        assertEquals(new BigDecimal("2263"), compensate.getAmount(), "累计代偿金额");
+        assertEquals(LocalDateTime.of(2016, 6, 20, 0, 0), compensate.getDisposeDate());
+
+        assertEquals(1, ctx.getReport().getAssetTotal(), "主表资产处置条数应回填");
+        assertEquals(1, ctx.getReport().getRepaymentTotal(), "主表代偿条数应回填");
+    }
+
+    /** 各类明细都必须保留原文，便于规则变化后回溯与对账。 */
+    @Test
+    void keepsRawContentForAllDetailKinds() throws Exception {
+        ParseContext ctx = parse();
+        assertTrue(ctx.getAssetDisposals().stream().allMatch(e -> e.getContent() != null),
+                "资产处置必须保留原文");
+        assertTrue(ctx.getCompensates().stream().allMatch(e -> e.getContent() != null),
+                "代偿必须保留原文");
+        assertTrue(ctx.getGuarantees().stream().allMatch(e -> e.getContent() != null),
+                "担保必须保留原文");
+        assertFalse(ctx.getWarnings().stream().anyMatch(w -> w.contains("标题未识别")),
+                "不应再有信贷块被标题白名单丢弃: " + ctx.getWarnings());
     }
 }

@@ -217,32 +217,29 @@ public final class BlockSplitter {
     }
 
     /**
-     * 提取公共记录文本：只认第一处真「公共记录」区块，跳过后面「系统中没有」的重复造数据块，
-     * 并把紧随其后的电信欠费明细表一并收进文本，供解析器按类别抽取。若无真块（真空），
-     * 返回「系统中没有」原文，保持空公共记录的语义。
+     * 提取公共记录文本：只认真「公共记录」区块，并把紧随其后的电信欠费明细表一并收进文本，
+     * 供解析器按类别抽取。若区块内写的是「系统中没有」，原样返回，保持空公共记录的语义。
+     *
+     * <p>定位方式是本方法的关键：真实报告的整份正文被一个最外层 {@code <table>} 包着，
+     * 它的 {@code text()} 里必然出现「公共记录」四个字。早期实现取「文档顺序第一个包含
+     * 公共记录且不含『系统中没有』的 table」，于是只要报告里真的存在公共记录（外层表就不再
+     * 含「系统中没有」），整份报告都会被当成公共记录——信贷明细被二次分类成公共记录，
+     * 担保/代偿出现重复脏数据，{@code common_record_description} 也存进了全文。现在改为
+     * <b>按 {@code .h1} 标题定位</b>，标题缺失时才退化为「候选表中文本最短者」。</p>
      *
      * @param doc 报告文档
-     * @return 公共记录文本
+     * @return 公共记录文本，报告未包含公共记录区块时返回空串
      */
     private static String extractPublicText(Document doc) {
-        Element real = null;
-        for (Element table : doc.select("table")) {
-            String tx = table.text();
-            if (HtmlUtil.contains(tx, "公共记录") && !HtmlUtil.contains(tx, "系统中没有")) {
-                real = table;
-                break;
-            }
+        Element block = findByHeading(doc);
+        if (block == null) {
+            block = findSmallestCandidate(doc);
         }
-        if (real == null) {
-            for (Element table : doc.select("table")) {
-                if (HtmlUtil.contains(table.text(), "系统中没有")) {
-                    return HtmlUtil.clean(table.text());
-                }
-            }
-            return "";
+        if (block == null) {
+            return findNoRecordText(doc);
         }
-        StringBuilder sb = new StringBuilder(HtmlUtil.clean(real.text()));
-        Element sib = real.nextElementSibling();
+        StringBuilder sb = new StringBuilder(HtmlUtil.clean(block.text()));
+        Element sib = block.nextElementSibling();
         while (sib != null) {
             String tx = HtmlUtil.clean(sib.text());
             if (tx.contains("为他人担保") || tx.contains("查询记录") || tx.contains("公共记录")) {
@@ -254,5 +251,63 @@ public final class BlockSplitter {
             sib = sib.nextElementSibling();
         }
         return sb.toString();
+    }
+
+    /**
+     * 按 {@code .h1} 标题文本定位「公共记录」区块所在的最内层 table。
+     *
+     * <p>标题单元格自身带 {@code class="h1"}，用 {@link Element#closest(String)} 回溯到
+     * 最近的 table，即可跳过包裹全文的外层表。</p>
+     *
+     * @param doc 报告文档
+     * @return 公共记录区块的 table，未找到返回 null
+     */
+    private static Element findByHeading(Document doc) {
+        for (Element el : doc.select(".h1")) {
+            if ("公共记录".equals(HtmlUtil.clean(el.text()).replace(" ", ""))) {
+                Element table = el.closest("table");
+                if (table != null) {
+                    return table;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 标题缺失时的兜底：在包含「公共记录」的候选表中取文本最短的一个。
+     *
+     * <p>包裹全文的外层表文本长度是真正区块的几十倍，取最短者即可排除它；这比「文档顺序第一个」
+     * 稳健，也不依赖报告里是否出现「系统中没有」。</p>
+     *
+     * @param doc 报告文档
+     * @return 候选 table，无候选返回 null
+     */
+    private static Element findSmallestCandidate(Document doc) {
+        Element smallest = null;
+        for (Element table : doc.select("table")) {
+            if (!HtmlUtil.contains(table.text(), "公共记录")) {
+                continue;
+            }
+            if (smallest == null || table.text().length() < smallest.text().length()) {
+                smallest = table;
+            }
+        }
+        return smallest;
+    }
+
+    /**
+     * 报告完全没有公共记录标题时，退回旧语义：返回「系统中没有」原文留痕。
+     *
+     * @param doc 报告文档
+     * @return 「系统中没有」原文，未找到返回空串
+     */
+    private static String findNoRecordText(Document doc) {
+        for (Element table : doc.select("table")) {
+            if (HtmlUtil.contains(table.text(), "系统中没有")) {
+                return HtmlUtil.clean(table.text());
+            }
+        }
+        return "";
     }
 }
