@@ -1,8 +1,11 @@
 package com.workbuddy.pbccrc.engine;
 
+import lombok.extern.slf4j.Slf4j;
+
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -15,6 +18,7 @@ import java.util.regex.Pattern;
  * @author Alan
  * @date 2026-11-17
  */
+@Slf4j
 public final class ValueConverter {
 
     private static final Pattern YMD = Pattern.compile("(\\d{4})\\s*年\\s*(\\d{1,2})\\s*月\\s*(\\d{1,2})\\s*日");
@@ -24,6 +28,25 @@ public final class ValueConverter {
 
     private ValueConverter() {
     }
+
+    /**
+     * 标志位字段名到「命中值」的映射。
+     *
+     * <p>这些列在库里的注释是「负面状态」语义：{@code 0 是 / 1 否}，而规则匹配的是负面关键词
+     * （已变成呆账 / 已结清 / 已销户），命中即代表该状态成立，故回填 {@code 0}。
+     * {@code ACTIVE} 是例外：它匹配的是「未激活」，而列语义是 {@code 1=未激活}，故回填 {@code 1}。</p>
+     *
+     * <p>早期实现用 if/else 硬编码并兜底返回 {@code 1}，新增 FLAG 字段时不会报错、只会静默拿到
+     * {@code 1}；改为显式映射后，未登记字段会留下告警日志。</p>
+     */
+    private static final Map<String, String> FLAG_MATCHED_VALUE = Map.of(
+            "BAD", "0",
+            "SETTLEMENT", "0",
+            "CLOSE_ACCOUNT", "0",
+            "ACTIVE", "1");
+
+    /** 未登记的标志位字段的兜底值，与库中列默认值保持一致。 */
+    private static final String FLAG_DEFAULT = "1";
 
     /**
      * 按字段名推断类型后转换原始值。
@@ -52,7 +75,7 @@ public final class ValueConverter {
             return switch (type) {
                 case MONEY -> money(raw);
                 case DATE -> date(raw);
-                case FLAG -> flag(fieldName, raw);
+                case FLAG -> flag(fieldName);
                 case INT -> integer(raw);
                 case STRING -> raw;
             };
@@ -107,22 +130,18 @@ public final class ValueConverter {
     }
 
     /**
-     * 解析标志位：命中即代表该状态成立，按列注释回填「0」或「1」。
+     * 解析标志位：命中即代表该状态成立，按 {@link #FLAG_MATCHED_VALUE} 回填「0」或「1」。
      *
      * @param fieldName 目标字段名
-     * @param raw       原始字符串
      * @return 标志位字符串
      */
-    private static String flag(String fieldName, String raw) {
-        String n = fieldName.toUpperCase();
-        // 命中即代表该状态成立，按列注释回填
-        if ("BAD".equals(n) || "SETTLEMENT".equals(n) || "CLOSE_ACCOUNT".equals(n)) {
-            return "0";
+    private static String flag(String fieldName) {
+        String matched = FLAG_MATCHED_VALUE.get(fieldName.toUpperCase());
+        if (matched == null) {
+            log.warn("未登记的标志位字段 {}，按默认值 {} 处理，请检查命名约定", fieldName, FLAG_DEFAULT);
+            return FLAG_DEFAULT;
         }
-        if ("ACTIVE".equals(n)) {
-            return "1";
-        }
-        return "1";
+        return matched;
     }
 
     /**

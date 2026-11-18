@@ -38,6 +38,8 @@ class ReportStateMachineTest {
         ds.setURL("jdbc:h2:mem:pbccrc_state;MODE=MySQL;DB_CLOSE_DELAY=-1");
         try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
             st.execute("DROP TABLE IF EXISTS t_pbccrc_report");
+            // 列类型与 db/schema.sql 保持一致：早先用 VARCHAR 代替 datetime、DECIMAL 代替 int，
+            // H2 会默默接受，生产上却会因类型不匹配报错，测出来的「通过」并不可信
             st.execute("""
                     CREATE TABLE t_pbccrc_report (
                       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -45,10 +47,10 @@ class ReportStateMachineTest {
                       status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
                       retry_count INT NOT NULL DEFAULT 0,
                       heartbeat_time TIMESTAMP,
-                      content_hash VARCHAR(64), error_msg VARCHAR(1000),
+                      content_hash VARCHAR(64), error_msg CLOB,
                       create_time TIMESTAMP, creator_id VARCHAR(50), modify_time TIMESTAMP,
-                      name VARCHAR(255), cert_type VARCHAR(20), cert_no VARCHAR(50),
-                      query_time VARCHAR(100), report_time VARCHAR(100), marital_status VARCHAR(50),
+                      name VARCHAR(255), cert_type VARCHAR(100), cert_no VARCHAR(100),
+                      query_time TIMESTAMP, report_time TIMESTAMP, marital_status VARCHAR(100),
                       report_no VARCHAR(100), description CLOB,
                       credit_record_description CLOB, query_record_description CLOB,
                       common_record_description CLOB, common_record_detail CLOB,
@@ -59,7 +61,7 @@ class ReportStateMachineTest {
                       housing_loan_serious_overdue INT, housing_loan_guarantee INT,
                       other_loan_total INT, other_loan_active INT, other_loan_overdue INT,
                       other_loan_serious_overdue INT, other_loan_guarantee INT,
-                      asset_total DECIMAL(18,2), repayment_total DECIMAL(18,2))
+                      asset_total INT, repayment_total INT)
                     """);
         }
         Environment env = new Environment("test", new JdbcTransactionFactory(), ds);

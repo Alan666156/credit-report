@@ -1,5 +1,7 @@
 package com.workbuddy.pbccrc.util;
 
+import lombok.extern.slf4j.Slf4j;
+
 import java.lang.reflect.Field;
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -15,6 +17,7 @@ import java.util.Map;
  * @author Alan
  * @date 2026-11-17
  */
+@Slf4j
 public final class BeanFillUtil {
 
     private BeanFillUtil() {
@@ -41,8 +44,12 @@ public final class BeanFillUtil {
             try {
                 field.setAccessible(true);
                 field.set(bean, coerce(e.getValue(), field.getType()));
-            } catch (IllegalAccessException ignored) {
-                // 单字段填充失败不影响整份报告
+            } catch (IllegalAccessException | RuntimeException ex) {
+                // 单字段失败不影响整份报告：类型不匹配（如 String 填进 LocalDateTime）也只跳过该字段。
+                // 早期只捕获 IllegalAccessException，类型不匹配抛出的 IllegalArgumentException 会冒到
+                // 调用方，把整块明细的解析全部作废。
+                log.warn("字段填充失败, 已跳过: field={}, configName={}, value={}, 原因={}",
+                        name, e.getKey(), e.getValue(), ex.toString());
             }
         }
         return bean;

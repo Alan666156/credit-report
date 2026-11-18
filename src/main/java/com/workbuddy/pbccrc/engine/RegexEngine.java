@@ -1,5 +1,7 @@
 package com.workbuddy.pbccrc.engine;
 
+import lombok.extern.slf4j.Slf4j;
+
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -15,6 +17,7 @@ import java.util.regex.Matcher;
  * @author Alan
  * @date 2026-11-17
  */
+@Slf4j
 public final class RegexEngine {
 
     private RegexEngine() {
@@ -41,8 +44,16 @@ public final class RegexEngine {
                     raw = null;
                     break;
                 }
-                raw = matcher.groupCount() >= rule.getGroupIndex()
-                        ? matcher.group(rule.getGroupIndex()) : matcher.group();
+                if (rule.getGroupIndex() > matcher.groupCount()) {
+                    // 配置的组序号超出正则实际捕获组数：宁可当未命中，也不能退化成「整段匹配」，
+                    // 否则整条 li 文本会被当成某个字段值写进库，且没有任何提示
+                    log.warn("规则 {} 的组序号 {} 超出正则捕获组数 {}，按未命中处理: {}",
+                            rule.getFieldName(), rule.getGroupIndex(), matcher.groupCount(),
+                            rule.getPattern().pattern());
+                    raw = null;
+                    break;
+                }
+                raw = matcher.group(rule.getGroupIndex());
             }
             if (raw != null) {
                 Object value = ValueConverter.convert(rule.getFieldName(), raw.trim(), rule.getValueType());

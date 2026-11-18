@@ -17,6 +17,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 
 /**
  * 管理端最小鉴权过滤器（评审 2.5）。
@@ -76,7 +77,7 @@ public class AuthFilter extends OncePerRequestFilter {
         String presented = request.getHeader(TOKEN_HEADER);
         String normalized = presented != null && presented.startsWith(BEARER_PREFIX)
                 ? presented.substring(BEARER_PREFIX.length()) : presented;
-        if (token == null || token.isBlank() || !token.equals(normalized)) {
+        if (token == null || token.isBlank() || !matches(token, normalized)) {
             log.warn("未授权访问 {}，token 校验失败", request.getRequestURI());
             reject(response);
             return;
@@ -89,6 +90,21 @@ public class AuthFilter extends OncePerRequestFilter {
         } finally {
             OperatorContext.clear();
         }
+    }
+
+    /**
+     * 常量时间比较 token，避免按字节提前返回造成的时序侧信道。
+     *
+     * @param expected  配置中的正确 token
+     * @param presented 请求携带的 token，可为 null
+     * @return 一致返回 true
+     */
+    private static boolean matches(String expected, String presented) {
+        if (presented == null) {
+            return false;
+        }
+        return MessageDigest.isEqual(expected.getBytes(StandardCharsets.UTF_8),
+                presented.getBytes(StandardCharsets.UTF_8));
     }
 
     /**
