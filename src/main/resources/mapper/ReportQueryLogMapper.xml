@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  提交流水。仅作留痕，不承担去重：提交幂等由 Redis 7 天原子锁 + 主表近 7 天窗口
+  查询共同保证（详见 docs/DESIGN.md 6.1）。
+
+  注意 CREATE_TIME 列的类型是 date（不是 datetime），故用 CURDATE() 写入。
+
+  另注意：表上的唯一键 (customer_name, customer_id_card, content_hash) 目前不生效 ——
+  本语句不写 content_hash，该列恒为 NULL，而 MySQL 唯一索引对 NULL 不去重，
+  所以 INSERT IGNORE 实际永不冲突。保留 IGNORE 是兼容历史数据，别据此假设它有去重能力。
+-->
+<mapper namespace="com.workbuddy.pbccrc.dao.ReportQueryLogMapper">
+
+    <insert id="insertIgnore">
+        INSERT IGNORE INTO t_pbccrc_report_querylog
+            (customer_name, customer_id_card, create_time, report_id, creator_id)
+        VALUES
+            (#{customerName}, #{customerIdCard}, CURDATE(), #{reportId}, #{creatorId})
+    </insert>
+
+    <delete id="deleteByReportId">
+        DELETE FROM t_pbccrc_report_querylog WHERE report_id = #{reportId}
+    </delete>
+
+</mapper>

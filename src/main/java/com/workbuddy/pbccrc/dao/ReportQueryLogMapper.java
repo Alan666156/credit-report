@@ -1,7 +1,5 @@
 package com.workbuddy.pbccrc.dao;
 
-import org.apache.ibatis.annotations.Delete;
-import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 
 /**
@@ -25,7 +23,6 @@ public interface ReportQueryLogMapper {
      * @param creatorId      创建人
      * @return 影响行数，0 表示唯一键冲突
      */
-    @Insert("INSERT IGNORE INTO t_pbccrc_report_querylog (customer_name, customer_id_card, create_time, report_id, creator_id) VALUES (#{customerName}, #{customerIdCard}, CURDATE(), #{reportId}, #{creatorId})")
     int insertIgnore(@Param("customerName") String customerName, @Param("customerIdCard") String customerIdCard, @Param("reportId") Integer reportId, @Param("creatorId") String creatorId);
 
     /**
@@ -34,6 +31,5 @@ public interface ReportQueryLogMapper {
      * @param reportId 报告主键
      * @return 影响行数
      */
-    @Delete("DELETE FROM t_pbccrc_report_querylog WHERE report_id=#{reportId}")
     int deleteByReportId(@Param("reportId") Integer reportId);
 }

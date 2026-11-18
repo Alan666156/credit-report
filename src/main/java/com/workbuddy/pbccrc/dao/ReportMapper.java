@@ -2,7 +2,7 @@ package com.workbuddy.pbccrc.dao;
 
 import com.workbuddy.pbccrc.model.dto.ReportVO;
 import com.workbuddy.pbccrc.model.entity.Report;
-import org.apache.ibatis.annotations.*;
+import org.apache.ibatis.annotations.Param;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -10,9 +10,10 @@ import java.util.List;
 /**
  * 报告主表数据访问接口。
  *
- * <p>覆盖持久化、状态机流转与后台按证件号加姓名查询。状态流转通过带状态条件的
- * CAS 更新实现：抢占（claim）、心跳（heartbeat）、重置为待解析（resetToPending），
- * 以及成功/失败标记，保证多节点并发下的状态一致性。</p>
+ * <p>覆盖持久化、状态机流转与后台条件查询。SQL 集中于
+ * {@code resources/mapper/ReportMapper.xml}：状态流转通过带 {@code status} 条件的
+ * CAS 更新实现（抢占 claim、心跳 heartbeat、重置 resetToPending、成功/失败标记），
+ * 调用方必须检查返回行数——0 行表示状态已被他人改动，而非无操作。</p>
  *
  * @author Alan
  * @date 2026-11-17
@@ -25,7 +26,6 @@ public interface ReportMapper {
      * @param id 报告主键
      * @return 报告实体，无记录返回 null
      */
-    @Select("SELECT * FROM t_pbccrc_report WHERE id = #{id}")
     Report findById(@Param("id") Integer id);
 
     /**
@@ -34,8 +34,6 @@ public interface ReportMapper {
      * @param report 报告实体
      * @return 影响行数，成功为 1
      */
-    @Insert("INSERT INTO t_pbccrc_report (customer_id_card, customer_name, app_no, status, retry_count, heartbeat_time, content_hash, create_time, creator_id) VALUES (#{customerIdCard}, #{customerName}, #{appNo}, #{status}, #{retryCount}, #{heartbeatTime}, #{contentHash}, #{createTime}, #{creatorId})")
-    @Options(useGeneratedKeys = true, keyProperty = "id")
     int insert(Report report);
 
     /**
@@ -44,7 +42,6 @@ public interface ReportMapper {
      * @param id 报告主键
      * @return 影响行数，1 表示抢占成功，0 表示已被抢占或状态不符
      */
-    @Update("UPDATE t_pbccrc_report SET status = 'PARSING', heartbeat_time = NOW(), error_msg = NULL WHERE id = #{id} AND status IN ('PENDING','FAILED')")
     int claim(@Param("id") Integer id);
 
     /**
@@ -53,7 +50,6 @@ public interface ReportMapper {
      * @param id 报告主键
      * @return 影响行数
      */
-    @Update("UPDATE t_pbccrc_report SET heartbeat_time = NOW() WHERE id = #{id} AND status = 'PARSING'")
     int heartbeat(@Param("id") Integer id);
 
     /**
@@ -66,17 +62,15 @@ public interface ReportMapper {
      * @param report 含汇总字段与主键的报告实体
      * @return 影响行数，0 表示主表状态已变更
      */
-    @Update("UPDATE t_pbccrc_report SET name=#{name}, cert_type=#{certType}, cert_no=#{certNo}, query_time=#{queryTime}, report_time=#{reportTime}, marital_status=#{maritalStatus}, report_no=#{reportNo}, description=#{description}, credit_record_description=#{creditRecordDescription}, query_record_description=#{queryRecordDescription}, common_record_description=#{commonRecordDescription}, common_record_detail=#{commonRecordDetail}, credit_record_summary=#{creditRecordSummary}, credit_card_total=#{creditCardTotal}, credit_card_active=#{creditCardActive}, credit_card_overdue=#{creditCardOverdue}, credit_card_serious_overdue=#{creditCardSeriousOverdue}, credit_card_guarantee=#{creditCardGuarantee}, housing_loan_total=#{housingLoanTotal}, housing_loan_active=#{housingLoanActive}, housing_loan_overdue=#{housingLoanOverdue}, housing_loan_serious_overdue=#{housingLoanSeriousOverdue}, housing_loan_guarantee=#{housingLoanGuarantee}, other_loan_total=#{otherLoanTotal}, other_loan_active=#{otherLoanActive}, other_loan_overdue=#{otherLoanOverdue}, other_loan_serious_overdue=#{otherLoanSeriousOverdue}, other_loan_guarantee=#{otherLoanGuarantee}, asset_total=#{assetTotal}, repayment_total=#{repaymentTotal}, status='SUCCESS', error_msg=#{errorMsg}, heartbeat_time=NOW(), modify_time=NOW() WHERE id=#{id} AND status='PARSING'")
     int markSuccess(Report report);
 
     /**
      * 标记解析失败并递增重试次数。
      *
-     * @param id      报告主键
+     * @param id       报告主键
      * @param errorMsg 失败原因
      * @return 影响行数
      */
-    @Update("UPDATE t_pbccrc_report SET status='FAILED', error_msg=#{errorMsg}, retry_count = retry_count + 1, modify_time=NOW() WHERE id=#{id}")
     int markFailed(@Param("id") Integer id, @Param("errorMsg") String errorMsg);
 
     /**
@@ -89,7 +83,6 @@ public interface ReportMapper {
      * @param id 报告主键
      * @return 影响行数，1 表示重置成功
      */
-    @Update("UPDATE t_pbccrc_report SET status='PENDING', heartbeat_time=NOW(), modify_time=NOW() WHERE id=#{id} AND status IN ('PENDING','PARSING','FAILED')")
     int resetToPending(@Param("id") Integer id);
 
     /**
@@ -103,7 +96,6 @@ public interface ReportMapper {
      * @param id 报告主键
      * @return 影响行数，1 表示重置成功
      */
-    @Update("UPDATE t_pbccrc_report SET status='PENDING', heartbeat_time=NOW(), modify_time=NOW() WHERE id=#{id} AND status='FAILED'")
     int resetFailedToPending(@Param("id") Integer id);
 
     /**
@@ -112,7 +104,6 @@ public interface ReportMapper {
      * @param minutes 心跳超时阈值（分钟）
      * @return 卡死报告主键列表
      */
-    @Select("SELECT id FROM t_pbccrc_report WHERE status IN ('PENDING','PARSING') AND heartbeat_time < DATE_SUB(NOW(), INTERVAL #{minutes} MINUTE)")
     List<Integer> findStuck(@Param("minutes") int minutes);
 
     /**
@@ -121,7 +112,6 @@ public interface ReportMapper {
      * @param maxRetry 最大重试次数上限
      * @return 重试次数未达上限的失败报告主键列表
      */
-    @Select("SELECT id FROM t_pbccrc_report WHERE status='FAILED' AND retry_count < #{maxRetry}")
     List<Integer> findRetryable(@Param("maxRetry") int maxRetry);
 
     /**
@@ -130,7 +120,6 @@ public interface ReportMapper {
      * @param maxRetry 最大重试次数上限
      * @return 失败且重试次数已达上限的报告列表
      */
-    @Select("SELECT id, customer_name, customer_id_card, report_no, query_time FROM t_pbccrc_report WHERE status='FAILED' AND retry_count >= #{maxRetry} ORDER BY modify_time DESC")
     List<Report> findDeadLetters(@Param("maxRetry") int maxRetry);
 
     /**
@@ -142,8 +131,10 @@ public interface ReportMapper {
      * @param pageSize       每页条数
      * @return 报告视图列表
      */
-    @Select("SELECT id, customer_name, customer_id_card, name, cert_no, report_no, query_time, report_time, status, retry_count, error_msg, app_no, create_time FROM t_pbccrc_report WHERE customer_id_card = #{customerIdCard} AND customer_name = #{customerName} ORDER BY create_time DESC LIMIT #{offset}, #{pageSize}")
-    List<ReportVO> findByCustomer(@Param("customerIdCard") String customerIdCard, @Param("customerName") String customerName, @Param("offset") int offset, @Param("pageSize") int pageSize);
+    List<ReportVO> findByCustomer(@Param("customerIdCard") String customerIdCard,
+                                  @Param("customerName") String customerName,
+                                  @Param("offset") int offset,
+                                  @Param("pageSize") int pageSize);
 
     /**
      * 统计指定证件号加姓名的报告总数。
@@ -152,8 +143,8 @@ public interface ReportMapper {
      * @param customerName   姓名
      * @return 报告总数
      */
-    @Select("SELECT COUNT(1) FROM t_pbccrc_report WHERE customer_id_card = #{customerIdCard} AND customer_name = #{customerName}")
-    long countByCustomer(@Param("customerIdCard") String customerIdCard, @Param("customerName") String customerName);
+    long countByCustomer(@Param("customerIdCard") String customerIdCard,
+                         @Param("customerName") String customerName);
 
     /**
      * 查询指定姓名与证件号在给定时间点之后最近的一条报告主键（提交幂等二次校验）。
@@ -169,7 +160,6 @@ public interface ReportMapper {
      * @param since          窗口起点时间，早于该时间的记录不算重复
      * @return 窗口内最近一条报告主键，无记录返回 null
      */
-    @Select("SELECT id FROM t_pbccrc_report WHERE customer_name = #{customerName} AND customer_id_card = #{customerIdCard} AND create_time >= #{since} ORDER BY create_time DESC LIMIT 1 FOR UPDATE")
     Integer findRecentForUpdate(@Param("customerName") String customerName,
                                 @Param("customerIdCard") String customerIdCard,
                                 @Param("since") LocalDateTime since);
@@ -180,11 +170,13 @@ public interface ReportMapper {
      * @param id 报告主键
      * @return 报告视图，无记录返回 null
      */
-    @Select("SELECT id, customer_name, customer_id_card, name, cert_no, report_no, query_time, report_time, status, retry_count, error_msg, app_no, create_time FROM t_pbccrc_report WHERE id=#{id}")
     ReportVO findVOById(@Param("id") Integer id);
 
     /**
      * 后台管理：按可选条件统计报告总数。
+     *
+     * <p>过滤条件与 {@link #findByCondition} 共用 XML 中的 {@code AdminWhere} 片段，
+     * 保证总数与列表口径一致。</p>
      *
      * @param customerName    用户名，模糊匹配，可为空
      * @param name            姓名，模糊匹配，可为空
@@ -192,13 +184,6 @@ public interface ReportMapper {
      * @param createTimeEnd   创建时间截止，包含，可为空
      * @return 匹配记录总数
      */
-    @Select("<script>" +
-            "SELECT COUNT(1) FROM t_pbccrc_report WHERE 1=1 " +
-            "<if test='customerName != null and customerName != \"\"'>AND customer_name LIKE CONCAT('%', #{customerName}, '%') </if>" +
-            "<if test='name != null and name != \"\"'>AND name LIKE CONCAT('%', #{name}, '%') </if>" +
-            "<if test='createTimeStart != null and createTimeStart != \"\"'>AND create_time &gt;= #{createTimeStart} </if>" +
-            "<if test='createTimeEnd != null and createTimeEnd != \"\"'>AND create_time &lt;= #{createTimeEnd} </if>" +
-            "</script>")
     long countByCondition(@Param("customerName") String customerName,
                           @Param("name") String name,
                           @Param("createTimeStart") String createTimeStart,
@@ -215,14 +200,6 @@ public interface ReportMapper {
      * @param pageSize        每页条数
      * @return 报告视图列表
      */
-    @Select("<script>" +
-            "SELECT id, customer_name, customer_id_card, name, cert_no, report_no, query_time, report_time, status, retry_count, error_msg, app_no, create_time FROM t_pbccrc_report WHERE 1=1 " +
-            "<if test='customerName != null and customerName != \"\"'>AND customer_name LIKE CONCAT('%', #{customerName}, '%') </if>" +
-            "<if test='name != null and name != \"\"'>AND name LIKE CONCAT('%', #{name}, '%') </if>" +
-            "<if test='createTimeStart != null and createTimeStart != \"\"'>AND create_time &gt;= #{createTimeStart} </if>" +
-            "<if test='createTimeEnd != null and createTimeEnd != \"\"'>AND create_time &lt;= #{createTimeEnd} </if>" +
-            "ORDER BY create_time DESC LIMIT #{offset}, #{pageSize}" +
-            "</script>")
     List<ReportVO> findByCondition(@Param("customerName") String customerName,
                                    @Param("name") String name,
                                    @Param("createTimeStart") String createTimeStart,

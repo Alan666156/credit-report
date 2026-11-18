@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  配置驱动的解析规则，启动时由 RuleCache 全量加载。
+
+  按 v.id 排序是关键：RegexEngine 的 value_index 语义为「第几次匹配:第几组」，
+  同一字段有多条候选规则时依赖加载顺序，顺序一变抽取结果就可能变。
+
+  任一行的 value 为 NULL 会让 RuleCache 在编译期抛异常并阻断启动（fail fast），
+  报错信息会带字段名，便于直接定位到配置表的坏行。
+-->
+<mapper namespace="com.workbuddy.pbccrc.dao.RuleMapper">
+
+    <select id="selectAllRules" resultType="com.workbuddy.pbccrc.model.dto.RuleRow">
+        SELECT m.type, m.name, v.value, v.value_index
+        FROM t_pbccrc_report_model m
+        JOIN t_pbccrc_report_model_value v ON v.report_model_id = m.id
+        ORDER BY v.id
+    </select>
+
+</mapper>

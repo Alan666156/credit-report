@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  按报告主键读取各明细表，供后台详情接口聚合。
+
+  关于排序列：只有 t_pbccrc_credit_record / credit_card_record / loan_record /
+  asset_disposal / compensate / guarantee 这 6 张表有 record_num（解析时按报告内的
+  出现顺序写入）；admin_punishment / ccivil_decision / court_decision / tax_arrears /
+  telecom_owe / query_record 没有该列，改按自增主键 id 排序，等价于插入顺序。
+  新增排序前先确认目标表是否真有此列，否则会直接报 Unknown column。
+
+  关于 SELECT *：明细实体字段与表列一一对应，多余列会被 MyBatis 忽略。代价是
+  列改名时映射会静默为 null 而不是报错；若后续要给明细表加同义列，应改为显式列清单。
+-->
+<mapper namespace="com.workbuddy.pbccrc.dao.DetailQueryMapper">
+
+    <select id="creditCards" resultType="com.workbuddy.pbccrc.model.entity.CreditCardRecord">
+        SELECT * FROM t_pbccrc_credit_card_record WHERE report_id = #{reportId} ORDER BY record_num
+    </select>
+
+    <select id="loans" resultType="com.workbuddy.pbccrc.model.entity.LoanRecord">
+        SELECT * FROM t_pbccrc_loan_record WHERE report_id = #{reportId} ORDER BY record_num
+    </select>
+
+    <select id="queryRecords" resultType="com.workbuddy.pbccrc.model.entity.QueryRecord">
+        SELECT * FROM t_pbccrc_query_record WHERE report_id = #{reportId} ORDER BY id
+    </select>
+
+    <select id="assetDisposals" resultType="com.workbuddy.pbccrc.model.entity.AssetDisposal">
+        SELECT * FROM t_pbccrc_asset_disposal WHERE report_id = #{reportId} ORDER BY record_num
+    </select>
+
+    <select id="compensates" resultType="com.workbuddy.pbccrc.model.entity.Compensate">
+        SELECT * FROM t_pbccrc_compensate WHERE report_id = #{reportId} ORDER BY record_num
+    </select>
+
+    <select id="guarantees" resultType="com.workbuddy.pbccrc.model.entity.Guarantee">
+        SELECT * FROM t_pbccrc_guarantee WHERE report_id = #{reportId} ORDER BY record_num
+    </select>
+
+    <select id="rawCreditRecords" resultType="com.workbuddy.pbccrc.model.entity.CreditRecord">
+        SELECT * FROM t_pbccrc_credit_record WHERE report_id = #{reportId} ORDER BY record_num
+    </select>
+
+    <select id="adminPunishments" resultType="com.workbuddy.pbccrc.model.entity.AdminPunishment">
+        SELECT * FROM t_pbccrc_admin_punishment WHERE report_id = #{reportId} ORDER BY id
+    </select>
+
+    <select id="civilDecisions" resultType="com.workbuddy.pbccrc.model.entity.CcivilDecision">
+        SELECT * FROM t_pbccrc_ccivil_decision WHERE report_id = #{reportId} ORDER BY id
+    </select>
+
+    <select id="courtDecisions" resultType="com.workbuddy.pbccrc.model.entity.CourtDecision">
+        SELECT * FROM t_pbccrc_court_decision WHERE report_id = #{reportId} ORDER BY id
+    </select>
+
+    <select id="taxArrears" resultType="com.workbuddy.pbccrc.model.entity.TaxArrears">
+        SELECT * FROM t_pbccrc_tax_arrears WHERE report_id = #{reportId} ORDER BY id
+    </select>
+
+    <select id="telecomOwes" resultType="com.workbuddy.pbccrc.model.entity.TelecomOwe">
+        SELECT * FROM t_pbccrc_telecom_owe WHERE report_id = #{reportId} ORDER BY id
+    </select>
+
+</mapper>

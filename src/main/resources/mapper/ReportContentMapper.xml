@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 报告 HTML 原文。原文与主表分离，避免主表行宽过大拖慢状态流转的 UPDATE。 -->
+<mapper namespace="com.workbuddy.pbccrc.dao.ReportContentMapper">
+
+    <!-- report_id 上有 REPORT_CONTENT_ID_INDEX；LIMIT 1 兜住历史上可能出现的重复行 -->
+    <select id="findByReportId" resultType="com.workbuddy.pbccrc.model.entity.ReportContent">
+        SELECT id, report_id, content, creator_id, create_time
+        FROM t_pbccrc_report_content
+        WHERE report_id = #{reportId}
+        LIMIT 1
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO t_pbccrc_report_content (report_id, content, creator_id, create_time)
+        VALUES (#{reportId}, #{content}, #{creatorId}, #{createTime})
+    </insert>
+
+    <delete id="deleteByReportId">
+        DELETE FROM t_pbccrc_report_content WHERE report_id = #{reportId}
+    </delete>
+
+</mapper>

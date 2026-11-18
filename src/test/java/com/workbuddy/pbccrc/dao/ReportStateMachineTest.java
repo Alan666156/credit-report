@@ -67,6 +67,7 @@ class ReportStateMachineTest {
         Environment env = new Environment("test", new JdbcTransactionFactory(), ds);
         Configuration cfg = new Configuration(env);
         cfg.addMapper(ReportMapper.class);
+        MapperXml.load(cfg, ReportMapper.class);
         factory = new SqlSessionFactoryBuilder().build(cfg);
     }
 

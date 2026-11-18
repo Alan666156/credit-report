@@ -1,7 +1,6 @@
 package com.workbuddy.pbccrc.dao;
 
 import com.workbuddy.pbccrc.model.dto.RuleRow;
-import org.apache.ibatis.annotations.Select;
 
 import java.util.List;
 
@@ -21,6 +20,5 @@ public interface RuleMapper {
      *
      * @return 规则行列表
      */
-    @Select("SELECT m.type, m.name, v.value, v.value_index FROM t_pbccrc_report_model m JOIN t_pbccrc_report_model_value v ON v.report_model_id = m.id ORDER BY v.id")
     List<RuleRow> selectAllRules();
 }

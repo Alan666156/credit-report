@@ -15,6 +15,9 @@ spring:
     time-zone: Asia/Shanghai
 
 mybatis:
+  # SQL 统一放 XML 维护（resources/mapper）。留意 DetailMapper 仍走 Provider：
+  # 它的表名是运行时传入的，写进 XML 只能变成 ${} 字符串替换，反而引入注入面。
+  mapper-locations: classpath*:mapper/**/*.xml
   configuration:
     map-underscore-to-camel-case: true
     jdbc-type-for-null: 'null'

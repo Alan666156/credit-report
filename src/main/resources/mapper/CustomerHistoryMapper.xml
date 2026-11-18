@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  客户查询历史留痕。query_date / customer_id_card / customer_name / operator /
+  report_state 五列在表上是 NOT NULL 且无默认值，插入时任一为空会直接报错，
+  调用方必须先完成参数校验。
+-->
+<mapper namespace="com.workbuddy.pbccrc.dao.CustomerHistoryMapper">
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO t_pbccrc_customer_history
+            (report_id, query_date, customer_id_card, customer_name,
+             operator, report_state, create_time, creator_id)
+        VALUES
+            (#{reportId}, #{queryDate}, #{customerIdCard}, #{customerName},
+             #{operator}, #{reportState}, #{createTime}, #{creatorId})
+    </insert>
+
+</mapper>

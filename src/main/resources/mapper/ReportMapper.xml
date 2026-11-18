@@ -1,0 +1,221 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+  报告主表 SQL。
+
+  设计要点：
+  1. 状态流转一律带 status 条件做 CAS（claim / markSuccess / markFailed / reset*），
+     「影响 0 行」是状态已被他人改动的信号，调用方必须据此回滚或跳过，不能只看非异常。
+  2. markSuccess 回填 34 个汇总列，且 WHERE 限定 status='PARSING'：迟到结果不得覆盖
+     已被看门狗置为 FAILED 的报告。
+  3. markFailed 同样限定 status='PARSING'：看门狗在 markSuccess 提交之后才判到超时时，
+     这条 CAS 会返回 0，从而不会把刚成功的报告改回 FAILED 并触发无意义的重解析。
+  4. NOW() 一律用数据库时钟，避免多节点 JVM 时钟漂移影响心跳超时判定。
+-->
+<mapper namespace="com.workbuddy.pbccrc.dao.ReportMapper">
+
+    <!-- 后台列表统一返回的视图列，三处查询共用，避免列清单散落 -->
+    <sql id="ReportVoColumns">
+        id, customer_name, customer_id_card, name, cert_no, report_no,
+        query_time, report_time, status, retry_count, error_msg, app_no, create_time
+    </sql>
+
+    <!--
+      后台按可选条件过滤。count 与 list 必须共用本片段：条件只写一份，
+      杜绝「总数与列表对不上」这类只能靠人眼比对才发现的不一致。
+      注意 create_time 的比较值以字符串传入，格式非法时 MySQL 会报 1525
+      （Incorrect DATETIME value）而不是静默查空，调用方需先校验格式。
+    -->
+    <sql id="AdminWhere">
+        <where>
+            <if test="customerName != null and customerName != ''">
+                AND customer_name LIKE CONCAT('%', #{customerName}, '%')
+            </if>
+            <if test="name != null and name != ''">
+                AND name LIKE CONCAT('%', #{name}, '%')
+            </if>
+            <if test="createTimeStart != null and createTimeStart != ''">
+                AND create_time &gt;= #{createTimeStart}
+            </if>
+            <if test="createTimeEnd != null and createTimeEnd != ''">
+                AND create_time &lt;= #{createTimeEnd}
+            </if>
+        </where>
+    </sql>
+
+    <select id="findById" resultType="com.workbuddy.pbccrc.model.entity.Report">
+        SELECT * FROM t_pbccrc_report WHERE id = #{id}
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO t_pbccrc_report
+            (customer_id_card, customer_name, app_no, status, retry_count,
+             heartbeat_time, content_hash, create_time, creator_id)
+        VALUES
+            (#{customerIdCard}, #{customerName}, #{appNo}, #{status}, #{retryCount},
+             #{heartbeatTime}, #{contentHash}, #{createTime}, #{creatorId})
+    </insert>
+
+    <!--
+      CAS 抢占：仅 PENDING / FAILED 可进入解析。error_msg 一并清空，
+      避免上一轮的失败原因残留在本轮成功的报告上。
+    -->
+    <update id="claim">
+        UPDATE t_pbccrc_report
+        SET status = 'PARSING', heartbeat_time = NOW(), error_msg = NULL
+        WHERE id = #{id} AND status IN ('PENDING', 'FAILED')
+    </update>
+
+    <update id="heartbeat">
+        UPDATE t_pbccrc_report
+        SET heartbeat_time = NOW()
+        WHERE id = #{id} AND status = 'PARSING'
+    </update>
+
+    <!--
+      回填解析结果并置成功。列多故拆行；列清单必须与 Report 实体及 t_pbccrc_report
+      实际结构一致，任一侧增删都要同步改动这里。
+      error_msg 显式回填：成功时传入 null 用于清除历史告警，依赖
+      application.yml 的 jdbc-type-for-null: 'null' 才能把 NULL 真正下发到驱动。
+    -->
+    <update id="markSuccess">
+        UPDATE t_pbccrc_report
+        SET name                          = #{name},
+            cert_type                     = #{certType},
+            cert_no                       = #{certNo},
+            query_time                    = #{queryTime},
+            report_time                   = #{reportTime},
+            marital_status                = #{maritalStatus},
+            report_no                     = #{reportNo},
+            description                   = #{description},
+            credit_record_description     = #{creditRecordDescription},
+            query_record_description      = #{queryRecordDescription},
+            common_record_description     = #{commonRecordDescription},
+            common_record_detail          = #{commonRecordDetail},
+            credit_record_summary         = #{creditRecordSummary},
+            credit_card_total             = #{creditCardTotal},
+            credit_card_active            = #{creditCardActive},
+            credit_card_overdue           = #{creditCardOverdue},
+            credit_card_serious_overdue   = #{creditCardSeriousOverdue},
+            credit_card_guarantee         = #{creditCardGuarantee},
+            housing_loan_total            = #{housingLoanTotal},
+            housing_loan_active           = #{housingLoanActive},
+            housing_loan_overdue          = #{housingLoanOverdue},
+            housing_loan_serious_overdue  = #{housingLoanSeriousOverdue},
+            housing_loan_guarantee        = #{housingLoanGuarantee},
+            other_loan_total              = #{otherLoanTotal},
+            other_loan_active             = #{otherLoanActive},
+            other_loan_overdue            = #{otherLoanOverdue},
+            other_loan_serious_overdue    = #{otherLoanSeriousOverdue},
+            other_loan_guarantee          = #{otherLoanGuarantee},
+            asset_total                   = #{assetTotal},
+            repayment_total               = #{repaymentTotal},
+            status                        = 'SUCCESS',
+            error_msg                     = #{errorMsg},
+            heartbeat_time                = NOW(),
+            modify_time                   = NOW()
+        WHERE id = #{id} AND status = 'PARSING'
+    </update>
+
+    <update id="markFailed">
+        UPDATE t_pbccrc_report
+        SET status = 'FAILED',
+            error_msg = #{errorMsg},
+            retry_count = retry_count + 1,
+            modify_time = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <!--
+      补偿重置：接受 PENDING 是关键。findStuck 会捞出心跳超时的 PENDING 报告
+      （如提交后异步任务未被派发、进程在派发前退出），若这里不接受 PENDING，
+      重置返回 0，补偿任务会每轮空转、报告永久卡死。重置时刷新心跳，
+      使重投后的报告重新进入超时计时。
+    -->
+    <update id="resetToPending">
+        UPDATE t_pbccrc_report
+        SET status = 'PENDING', heartbeat_time = NOW(), modify_time = NOW()
+        WHERE id = #{id} AND status IN ('PENDING', 'PARSING', 'FAILED')
+    </update>
+
+    <!--
+      手动重试专用：仅 FAILED 可重置。允许重置 PARSING 会让正在跑的线程与新任务
+      同时删改同一份报告的明细（分布式锁在解析期间不释放，但状态被改后新任务仍能
+      claim 到 PENDING）。PARSING 的卡死交给看门狗与补偿任务处理。
+    -->
+    <update id="resetFailedToPending">
+        UPDATE t_pbccrc_report
+        SET status = 'PENDING', heartbeat_time = NOW(), modify_time = NOW()
+        WHERE id = #{id} AND status = 'FAILED'
+    </update>
+
+    <!-- 走 IDX_PBCCRC_STATUS；心跳阈值由 pbccrc.parse.heartbeat-timeout-minutes 控制 -->
+    <select id="findStuck" resultType="java.lang.Integer">
+        SELECT id FROM t_pbccrc_report
+        WHERE status IN ('PENDING', 'PARSING')
+          AND heartbeat_time &lt; DATE_SUB(NOW(), INTERVAL #{minutes} MINUTE)
+    </select>
+
+    <select id="findRetryable" resultType="java.lang.Integer">
+        SELECT id FROM t_pbccrc_report
+        WHERE status = 'FAILED' AND retry_count &lt; #{maxRetry}
+    </select>
+
+    <!-- 仅取告警所需列，不整行加载原文外的宽字段 -->
+    <select id="findDeadLetters" resultType="com.workbuddy.pbccrc.model.entity.Report">
+        SELECT id, customer_name, customer_id_card, report_no, query_time
+        FROM t_pbccrc_report
+        WHERE status = 'FAILED' AND retry_count &gt;= #{maxRetry}
+        ORDER BY modify_time DESC
+    </select>
+
+    <select id="findByCustomer" resultType="com.workbuddy.pbccrc.model.dto.ReportVO">
+        SELECT <include refid="ReportVoColumns"/>
+        FROM t_pbccrc_report
+        WHERE customer_id_card = #{customerIdCard} AND customer_name = #{customerName}
+        ORDER BY create_time DESC
+        LIMIT #{offset}, #{pageSize}
+    </select>
+
+    <select id="countByCustomer" resultType="long">
+        SELECT COUNT(1) FROM t_pbccrc_report
+        WHERE customer_id_card = #{customerIdCard} AND customer_name = #{customerName}
+    </select>
+
+    <!--
+      提交幂等的二次校验。FOR UPDATE 行锁必须能走
+      IDX_PBCCRC_CUSTOMER_NAME_ID (customer_name, customer_id_card)，
+      否则退化为全表扫描加锁，多笔提交会相互阻塞并与解析侧更新死锁。
+      窗口起点由调用方按「当前时间 - submitLockTtlDays 天」传入。
+    -->
+    <select id="findRecentForUpdate" resultType="java.lang.Integer">
+        SELECT id FROM t_pbccrc_report
+        WHERE customer_name = #{customerName}
+          AND customer_id_card = #{customerIdCard}
+          AND create_time &gt;= #{since}
+        ORDER BY create_time DESC
+        LIMIT 1
+        FOR UPDATE
+    </select>
+
+    <select id="findVOById" resultType="com.workbuddy.pbccrc.model.dto.ReportVO">
+        SELECT <include refid="ReportVoColumns"/>
+        FROM t_pbccrc_report
+        WHERE id = #{id}
+    </select>
+
+    <select id="countByCondition" resultType="long">
+        SELECT COUNT(1) FROM t_pbccrc_report
+        <include refid="AdminWhere"/>
+    </select>
+
+    <!-- 走 IDX_PBCCRC_CREATE_TIME；姓名/证件为模糊匹配不走索引，后台分页场景可接受 -->
+    <select id="findByCondition" resultType="com.workbuddy.pbccrc.model.dto.ReportVO">
+        SELECT <include refid="ReportVoColumns"/>
+        FROM t_pbccrc_report
+        <include refid="AdminWhere"/>
+        ORDER BY create_time DESC
+        LIMIT #{offset}, #{pageSize}
+    </select>
+
+</mapper>

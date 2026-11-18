@@ -2,7 +2,6 @@ package com.workbuddy.pbccrc.dao;
 
 import com.workbuddy.pbccrc.model.entity.*;
 import org.apache.ibatis.annotations.Param;
-import org.apache.ibatis.annotations.Select;
 
 import java.util.List;
 
@@ -22,7 +21,6 @@ public interface DetailQueryMapper {
      * @param reportId 报告主键
      * @return 信用卡记录列表
      */
-    @Select("SELECT * FROM t_pbccrc_credit_card_record WHERE report_id=#{reportId} ORDER BY record_num")
     List<CreditCardRecord> creditCards(@Param("reportId") Integer reportId);
 
     /**
@@ -31,7 +29,6 @@ public interface DetailQueryMapper {
      * @param reportId 报告主键
      * @return 贷款记录列表
      */
-    @Select("SELECT * FROM t_pbccrc_loan_record WHERE report_id=#{reportId} ORDER BY record_num")
     List<LoanRecord> loans(@Param("reportId") Integer reportId);
 
     /**
@@ -40,7 +37,6 @@ public interface DetailQueryMapper {
      * @param reportId 报告主键
      * @return 查询记录列表
      */
-    @Select("SELECT * FROM t_pbccrc_query_record WHERE report_id=#{reportId} ORDER BY id")
     List<QueryRecord> queryRecords(@Param("reportId") Integer reportId);
 
     /**
@@ -49,7 +45,6 @@ public interface DetailQueryMapper {
      * @param reportId 报告主键
      * @return 资产处置记录列表
      */
-    @Select("SELECT * FROM t_pbccrc_asset_disposal WHERE report_id=#{reportId} ORDER BY record_num")
     List<AssetDisposal> assetDisposals(@Param("reportId") Integer reportId);
 
     /**
@@ -58,7 +53,6 @@ public interface DetailQueryMapper {
      * @param reportId 报告主键
      * @return 代偿记录列表
      */
-    @Select("SELECT * FROM t_pbccrc_compensate WHERE report_id=#{reportId} ORDER BY record_num")
     List<Compensate> compensates(@Param("reportId") Integer reportId);
 
     /**
@@ -67,7 +61,6 @@ public interface DetailQueryMapper {
      * @param reportId 报告主键
      * @return 担保记录列表
      */
-    @Select("SELECT * FROM t_pbccrc_guarantee WHERE report_id=#{reportId} ORDER BY record_num")
     List<Guarantee> guarantees(@Param("reportId") Integer reportId);
 
     /**
@@ -76,7 +69,6 @@ public interface DetailQueryMapper {
      * @param reportId 报告主键
      * @return 原始信贷记录列表
      */
-    @Select("SELECT * FROM t_pbccrc_credit_record WHERE report_id=#{reportId} ORDER BY record_num")
     List<CreditRecord> rawCreditRecords(@Param("reportId") Integer reportId);
 
     /**
@@ -85,7 +77,6 @@ public interface DetailQueryMapper {
      * @param reportId 报告主键
      * @return 行政处罚记录列表
      */
-    @Select("SELECT * FROM t_pbccrc_admin_punishment WHERE report_id=#{reportId} ORDER BY id")
     List<AdminPunishment> adminPunishments(@Param("reportId") Integer reportId);
 
     /**
@@ -94,7 +85,6 @@ public interface DetailQueryMapper {
      * @param reportId 报告主键
      * @return 民事判决记录列表
      */
-    @Select("SELECT * FROM t_pbccrc_ccivil_decision WHERE report_id=#{reportId} ORDER BY id")
     List<CcivilDecision> civilDecisions(@Param("reportId") Integer reportId);
 
     /**
@@ -103,7 +93,6 @@ public interface DetailQueryMapper {
      * @param reportId 报告主键
      * @return 法院判决记录列表
      */
-    @Select("SELECT * FROM t_pbccrc_court_decision WHERE report_id=#{reportId} ORDER BY id")
     List<CourtDecision> courtDecisions(@Param("reportId") Integer reportId);
 
     /**
@@ -112,7 +101,6 @@ public interface DetailQueryMapper {
      * @param reportId 报告主键
      * @return 欠税记录列表
      */
-    @Select("SELECT * FROM t_pbccrc_tax_arrears WHERE report_id=#{reportId} ORDER BY id")
     List<TaxArrears> taxArrears(@Param("reportId") Integer reportId);
 
     /**
@@ -121,6 +109,5 @@ public interface DetailQueryMapper {
      * @param reportId 报告主键
      * @return 电信欠费记录列表
      */
-    @Select("SELECT * FROM t_pbccrc_telecom_owe WHERE report_id=#{reportId} ORDER BY id")
     List<TelecomOwe> telecomOwes(@Param("reportId") Integer reportId);
 }
