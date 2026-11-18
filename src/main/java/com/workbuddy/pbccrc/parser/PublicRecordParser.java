@@ -6,6 +6,7 @@ import com.workbuddy.pbccrc.engine.RuleCacheHolder;
 import com.workbuddy.pbccrc.model.entity.*;
 import com.workbuddy.pbccrc.model.enums.ParseType;
 import com.workbuddy.pbccrc.util.BeanFillUtil;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.Arrays;
@@ -19,13 +20,22 @@ import java.util.Map;
  * 行政处罚、民事判决、强制执行、欠税、电信欠费等类别先保留原文，待样本细化。
  * 单条解析失败只记录告警。</p>
  *
+ * <p>类别判定是关键词 if/else 链，命中不到的段落此前会被静默丢弃。现改为逐条告警并输出
+ * 原文摘要：这些段落仍完整保留在 {@code common_record_detail} 原始文本中，日志只用于收集
+ * 样本、反推缺失的类别与规则。待规则流程设计完成后，未识别段落将改为落独立的原文留痕表，
+ * 不再只靠日志追溯。</p>
+ *
  * @author Alan
  * @date 2026-11-17
  */
+@Slf4j
 @Component
 public class PublicRecordParser {
 
     private static final String DATE_SPLIT = "(?=\\d{4}年\\d{1,2}月\\d{1,2}日|电信运营商：)";
+
+    /** 未识别类别的原文摘要长度上限，避免超长段落刷满日志。 */
+    private static final int SNIPPET_LENGTH = 200;
 
     private final RuleCacheHolder rules;
 
@@ -50,6 +60,7 @@ public class PublicRecordParser {
         ctx.getReport().setCommonRecordDetail(text);
         if (text != null && !text.isBlank() && !text.contains("系统中没有")) {
             int seq = 0;
+            int unmatched = 0;
             for (String seg : Arrays.asList(text.split(DATE_SPLIT))) {
                 String s = seg.replaceAll("^[，。；;\\s]+", "").trim();
                 // 区块标题与引导文字不是记录，防止其包含的「行政处罚」等关键词被误归类
@@ -58,10 +69,20 @@ public class PublicRecordParser {
                 }
                 seq++;
                 try {
-                    classify(ctx, s, seq);
+                    if (!classify(ctx, s, seq)) {
+                        unmatched++;
+                        // 未识别段落仍留在 common_record_detail 原文里，这里只补可观测性：
+                        // 输出序号与摘要，便于按日志回收样本、反推缺失的类别规则
+                        log.warn("report {} 公共记录第 {} 条未匹配任何类别，仅保留原文（摘要: {}）",
+                                ctx.getReportId(), seq, abbreviate(s));
+                    }
                 } catch (RuntimeException e) {
                     ctx.warn("公共记录第 " + seq + " 条解析失败: " + e.getMessage());
                 }
+            }
+            if (unmatched > 0) {
+                // 汇总一条，便于按 reportId 聚合统计「规则覆盖率」，也方便日志检索
+                log.warn("report {} 公共记录共 {} 条未识别类别，待补类别规则", ctx.getReportId(), unmatched);
             }
         }
         // 回填资产处置与代偿的记录条数：条数以明细列表为准，故必须放在早退分支之外，
@@ -76,8 +97,9 @@ public class PublicRecordParser {
      * @param ctx  解析上下文
      * @param text 单条记录文本
      * @param seq  记录序号
+     * @return 命中已知类别返回 true；未命中任何类别返回 false（原文由调用方告警留痕）
      */
-    private void classify(ParseContext ctx, String text, int seq) {
+    private boolean classify(ParseContext ctx, String text, int seq) {
         if (text.contains("资产处置") || text.contains("接收债权")) {
             AssetDisposal e = new AssetDisposal();
             base(ctx, e, seq);
@@ -124,7 +146,20 @@ public class PublicRecordParser {
             e.setReportId(ctx.getReportId());
             e.setContent(text);
             ctx.getTelecomOwes().add(e);
+        } else {
+            return false;
         }
+        return true;
+    }
+
+    /**
+     * 截取原文摘要，供日志采样使用。
+     *
+     * @param text 原文
+     * @return 不超过 {@value #SNIPPET_LENGTH} 字符的摘要，超长以省略号结尾
+     */
+    private static String abbreviate(String text) {
+        return text.length() <= SNIPPET_LENGTH ? text : text.substring(0, SNIPPET_LENGTH) + "...";
     }
 
     /**
