@@ -3,6 +3,7 @@ package com.workbuddy.pbccrc.service.impl;
 import com.workbuddy.pbccrc.common.BizException;
 import com.workbuddy.pbccrc.common.ResultCode;
 import com.workbuddy.pbccrc.config.PbccrcProperties;
+import com.workbuddy.pbccrc.dao.MapperXml;
 import com.workbuddy.pbccrc.dao.ReportContentMapper;
 import com.workbuddy.pbccrc.dao.ReportMapper;
 import com.workbuddy.pbccrc.dao.ReportQueryLogMapper;
@@ -93,13 +94,13 @@ class SubmitRealRedisSmoke {
         assertNotNull(dbPwd, "请设置环境变量 PBCCRC_DB_PWD");
         assertNotNull(redisPwd, "请设置环境变量 PBCCRC_REDIS_PWD");
 
-        // 真实 MySQL：用 MyBatis 以注解 mapper 直连，不依赖 Spring 上下文
+        // 真实 MySQL：手工构建 Configuration，不经过 mybatis-spring。生产环境由
+        // mapper-locations 自动装载 XML，这里必须显式装载，否则 SQL 迁入 XML 后
+        // 所有语句都会以 Invalid bound statement 失败（本类曾因此失效而未察觉）。
         dataSource = new UnpooledDataSource("com.mysql.cj.jdbc.Driver", DB_URL, DB_USER, dbPwd);
         Environment env = new Environment("smoke", new JdbcTransactionFactory(), dataSource);
-        Configuration cfg = new Configuration(env);
-        cfg.addMapper(ReportMapper.class);
-        cfg.addMapper(ReportContentMapper.class);
-        cfg.addMapper(ReportQueryLogMapper.class);
+        Configuration cfg = MapperXml.productionLike(env,
+                ReportMapper.class, ReportContentMapper.class, ReportQueryLogMapper.class);
         SqlSessionFactory factory = new SqlSessionFactoryBuilder().build(cfg);
         session = factory.openSession(true); // autoCommit：submit() 未经 Spring 代理，无声明式事务
         reportMapper = session.getMapper(ReportMapper.class);
