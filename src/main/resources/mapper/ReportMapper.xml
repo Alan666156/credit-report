@@ -117,13 +117,14 @@
         WHERE id = #{id} AND status = 'PARSING'
     </update>
 
+    <!-- CAS：仅解析中可判失败。返回 0 表示状态已被他人改动（通常是对端已置成功） -->
     <update id="markFailed">
         UPDATE t_pbccrc_report
         SET status = 'FAILED',
             error_msg = #{errorMsg},
             retry_count = retry_count + 1,
             modify_time = NOW()
-        WHERE id = #{id}
+        WHERE id = #{id} AND status = 'PARSING'
     </update>
 
     <!--

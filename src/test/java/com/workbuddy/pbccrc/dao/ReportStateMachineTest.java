@@ -170,4 +170,48 @@ class ReportStateMachineTest {
             assertEquals(0, mapper.resetToPending(id), "SUCCESS 报告不应被重置");
         }
     }
+
+    /**
+     * 看门狗的迟到判失败不得覆盖已成功的报告。
+     *
+     * <p>时序：解析线程 {@code markSuccess} 提交成功之后、{@code finally} 停止看门狗之前，
+     * 看门狗线程可能刚好判到超时并调用 {@code markFailed}。修复前该语句没有状态条件，
+     * 会把 SUCCESS 改回 FAILED 且 {@code retry_count+1}，随后补偿任务重投、重解析并误告警。
+     * 加 {@code status='PARSING'} 守卫后这里返回 0，状态与重试次数均不受影响。</p>
+     *
+     * @throws Exception 建表或查询失败
+     */
+    @Test
+    void markFailedDoesNotOverrideSuccess() throws Exception {
+        int id;
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+            st.execute("INSERT INTO t_pbccrc_report (customer_id_card, customer_name, status, retry_count, heartbeat_time) "
+                    + "VALUES ('110101199001010005', '戊', 'PARSING', 0, CURRENT_TIMESTAMP())");
+            try (ResultSet rs = st.executeQuery("SELECT MAX(id) FROM t_pbccrc_report")) {
+                rs.next();
+                id = rs.getInt(1);
+            }
+        }
+        com.workbuddy.pbccrc.model.entity.Report report = new com.workbuddy.pbccrc.model.entity.Report();
+        report.setId(id);
+        try (SqlSession session = factory.openSession(true)) {
+            ReportMapper mapper = session.getMapper(ReportMapper.class);
+            assertEquals(1, mapper.markSuccess(report), "PARSING 报告应先被标记成功");
+            assertEquals(0, mapper.markFailed(id, "解析超时：迟到判定"), "已成功的报告不接受判失败");
+        }
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery("SELECT status, retry_count FROM t_pbccrc_report WHERE id=" + id)) {
+            assertTrue(rs.next());
+            assertEquals("SUCCESS", rs.getString(1), "状态必须保持 SUCCESS");
+            assertEquals(0, rs.getInt(2), "重试次数不应被迟到判定累加");
+        }
+        // 反向确认守卫没有误伤正常路径：PARSING 报告仍可被判失败
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+            st.execute("UPDATE t_pbccrc_report SET status='PARSING' WHERE id=" + id);
+        }
+        try (SqlSession session = factory.openSession(true)) {
+            assertEquals(1, session.getMapper(ReportMapper.class).markFailed(id, "解析异常"),
+                    "PARSING 报告应可正常判失败");
+        }
+    }
 }

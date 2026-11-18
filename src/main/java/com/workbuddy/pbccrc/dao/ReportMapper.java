@@ -67,9 +67,13 @@ public interface ReportMapper {
     /**
      * 标记解析失败并递增重试次数。
      *
+     * <p>同样带 {@code status='PARSING'} 守卫：看门狗判超时发生在 {@code markSuccess}
+     * 提交之后时，本条 CAS 返回 0，不会把刚成功的报告改回 FAILED，从而避免一次
+     * 无意义的重解析与误告警。</p>
+     *
      * @param id       报告主键
      * @param errorMsg 失败原因
-     * @return 影响行数
+     * @return 影响行数，0 表示状态已被他人改动
      */
     int markFailed(@Param("id") Integer id, @Param("errorMsg") String errorMsg);
 
