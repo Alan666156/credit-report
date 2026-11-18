@@ -19,3 +19,8 @@ out/
 # OS
 .DS_Store
 Thumbs.db
+
+# 真实征信报告样例：含个人金融信息，不入版本库，仅本地放置。
+# 缺失时依赖样例的用例会被跳过（见 SampleReport），不会让构建变红。
+src/test/resources/*.html
+db/sample_report.html

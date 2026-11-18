@@ -8,9 +8,7 @@ import com.workbuddy.pbccrc.model.entity.AssetDisposal;
 import com.workbuddy.pbccrc.model.entity.Compensate;
 import org.junit.jupiter.api.Test;
 
-import java.io.InputStream;
 import java.math.BigDecimal;
-import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -28,10 +26,7 @@ class FullReportParseTest {
                 new PublicRecordParser(holder),
                 new QueryRecordParser());
 
-        String html;
-        try (InputStream in = getClass().getResourceAsStream("/report_all.html")) {
-            html = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-        }
+        String html = SampleReport.read(SampleReport.FULL);
         ParseContext ctx = new ParseContext();
         ctx.setReportId(1);
         ctx.setHtml(html);

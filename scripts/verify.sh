@@ -8,7 +8,7 @@ echo "=== verify $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
 COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "no-git")
 echo "[rule]     REVIEW.md"
 echo "[commit]   $COMMIT"
-echo "[sample]   E2E=src/test/resources/report_all.html"
+echo "[sample]   E2E=src/test/resources/report_all.html (本地样例, 不入版本库; 缺失时相关用例 skipped)"
 echo "[sample]   idem=SubmitIdempotencyTest/SubmitIdempotencyPropertyTest/SubmitServiceKeyTest/SubmitServiceImplIdempotencyTest"
 echo "[sample]   real-smoke=SubmitRealRedisSmoke (需真实Redis/MySQL+口令, 手动跑, 不并入mvn test)"
 

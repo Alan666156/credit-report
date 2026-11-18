@@ -2,8 +2,6 @@ package com.workbuddy.pbccrc.parser;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
 import java.util.List;
 
@@ -27,9 +25,9 @@ class ReportStructureTest {
 
     /** 两份真实样例都必须识别出全部三个基础区块。 */
     @Test
-    void realReportsExposeAllRequiredSections() throws Exception {
-        for (String file : List.of("/sample_report.html", "/report_all.html")) {
-            BlockSplitter.Parts parts = BlockSplitter.split(read(file));
+    void realReportsExposeAllRequiredSections() {
+        for (String file : List.of(SampleReport.DEFAULT, SampleReport.FULL)) {
+            BlockSplitter.Parts parts = BlockSplitter.split(SampleReport.read(file));
             assertEquals(new HashSet<>(BlockSplitter.REQUIRED_SECTIONS), parts.getSections(),
                     file + " 的基础区块识别不完整");
         }
@@ -81,11 +79,5 @@ class ReportStructureTest {
                         .filter(s -> !parts.getSections().contains(s))
                         .toList(),
                 "缺少的应恰好是查询记录");
-    }
-
-    private static String read(String resource) throws Exception {
-        try (InputStream in = ReportStructureTest.class.getResourceAsStream(resource)) {
-            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
-        }
     }
 }

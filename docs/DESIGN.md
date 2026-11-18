@@ -360,6 +360,12 @@ PENDING ──抢占──> PARSING ──成功──> SUCCESS
    > 教训：`SubmitRealRedisSmoke` 曾在 SQL 迁 XML 后静默失效整整一轮，正因为没人跑它。
 8. ~~**`SUCCESS` 状态下 `error_msg` 可能非空（待决）**~~ **已决（§5.4）**：告警只进日志，不再写
    `error_msg`；`CreditSummaryParser` 找不到概要表时降级为 `debug`。成功报告 `error_msg` 恒为 NULL。
+9. **真实报告样例不入版本库**：`src/test/resources/sample_report.html`、`report_all.html` 与
+   `db/sample_report.html` 是人行征信报告原文，含个人金融信息，已从索引移除并加入 `.gitignore`，
+   只在本地保留。统一由 `SampleReport` 读取，文件缺失时用 `Assumptions` 把用例标为 skipped
+   （本机有样例：69 例全跑；样例缺失：12 例 skipped，构建仍 SUCCESS）。
+   代价：`FullReportParseTest`、`ParsePipelineTest` 的真实报告用例在 CI 上覆盖为零。若需要 CI 也验证，
+   应另造一份**不含真实个人信息**的合成报告并入版本库，而不是把真实报告提交上来。
 
 ## 10. 变更记录
 

@@ -8,9 +8,7 @@ import com.workbuddy.pbccrc.model.entity.CreditCardRecord;
 import com.workbuddy.pbccrc.model.entity.LoanRecord;
 import org.junit.jupiter.api.Test;
 
-import java.io.InputStream;
 import java.math.BigDecimal;
-import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -27,10 +25,7 @@ class ParsePipelineTest {
                 new PublicRecordParser(holder),
                 new QueryRecordParser());
 
-        String html;
-        try (InputStream in = getClass().getResourceAsStream("/sample_report.html")) {
-            html = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-        }
+        String html = SampleReport.read(SampleReport.DEFAULT);
         ParseContext ctx = new ParseContext();
         ctx.setReportId(1);
         ctx.setHtml(html);
@@ -78,10 +73,7 @@ class ParsePipelineTest {
                 new PublicRecordParser(new RuleCacheHolder(cache)),
                 new QueryRecordParser());
 
-        String html;
-        try (InputStream in = getClass().getResourceAsStream("/sample_report.html")) {
-            html = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-        }
+        String html = SampleReport.read(SampleReport.DEFAULT);
         ParseContext ctx = new ParseContext();
         ctx.setReportId(1);
         ctx.setHtml(html);
