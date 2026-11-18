@@ -62,19 +62,49 @@ Client ────────>│  ReportController                      │
 > `t_pbccrc_report` 的 15 个汇总字段上。原先对应的 `CustomerCredit` 实体已删除，避免误以为
 > 写入后能查到数据。表本身未从库中清理，是否下线待业务确认。
 
-### 3.1 需补齐的主表字段（`db/migration.sql`）
+### 3.1 建库与升级
 
-运行服务前须先备份再执行。真实库建表时缺少以下字段：
+- **新库**：直接执行 `db/schema.sql`。它是完整基线，已包含状态机四列（`status` / `retry_count` /
+  `heartbeat_time` / `content_hash`）与两个关键索引（`IDX_PBCCRC_STATUS`、
+  `IDX_PBCCRC_CUSTOMER_NAME_ID`）。
+- **存量库**：执行 `db/migration.sql`（**非幂等**，四列追加到表末尾并补建上述索引），执行前先备份；
+  若已能看到 `status` 列则跳过，重复执行会报 Duplicate column。
 
-```sql
-ALTER TABLE t_pbccrc_report
-  ADD COLUMN status          VARCHAR(20)  NOT NULL DEFAULT 'PENDING' COMMENT '解析状态:PENDING/PARSING/SUCCESS/FAILED' AFTER app_no,
-  ADD COLUMN retry_count     INT          NOT NULL DEFAULT 0          COMMENT '解析重试次数' AFTER status,
-  ADD COLUMN heartbeat_time  DATETIME     DEFAULT NULL                COMMENT '解析心跳时间,识别卡死' AFTER retry_count,
-  ADD COLUMN content_hash    VARCHAR(64)  DEFAULT NULL                COMMENT '报告正文全文MD5，仅作内容完整性校验（不参与提交幂等）' AFTER heartbeat_time,
-  ADD INDEX IDX_PBCCRC_STATUS (status);
-UPDATE t_pbccrc_report SET status = 'SUCCESS' WHERE status = 'PENDING';
-```
+两份脚本此前并不一致：`schema.sql` 缺这四列，而 `ReportMapper` 的 17 条语句全都在用 `status`，
+按旧基线建库后首个查询即 `Unknown column 'status'`；缺少 `IDX_PBCCRC_CUSTOMER_NAME_ID` 时
+`findRecentForUpdate` 的 `SELECT ... FOR UPDATE` 会退化为全表扫描加锁，多笔提交相互阻塞并与解析侧
+更新死锁。该漂移现由 `SchemaContractTest` 固化为构建期断言（见 §3.2），不再依赖人眼比对。
+
+### 3.2 数据访问层与 SQL 组织
+
+SQL 统一放在 `src/main/resources/mapper/*.xml`（由 `mybatis.mapper-locations` 装配），Mapper 接口
+只保留方法签名与 javadoc，不用 `@Select` / `@Update` 注解承载 SQL。
+
+| 文件 | 语句 | 说明 |
+|---|---|---|
+| `ReportMapper.xml` | 17 | 主表读写与状态机 CAS；`markSuccess` 34 列逐行对齐；后台两条查询共用 `AdminWhere` 片段 |
+| `DetailQueryMapper.xml` | 12 | 明细读取，均按 `report_id` 过滤 |
+| `ReportContentMapper.xml` | 3 | 报告原文 |
+| `ReportQueryLogMapper.xml` | 2 | 提交流水（`create_time` 是 date 列，用 `CURDATE()`） |
+| `RuleMapper.xml` / `CustomerHistoryMapper.xml` | 各 1 | 规则加载 / 审计留痕 |
+| `DetailMapper`（Provider） | 2 | **例外**，见下 |
+
+`DetailMapper` 保留 `DetailSqlProvider` 而不搬 XML，是刻意选择：12 张明细表共用一个写入器，
+表名在运行期决定。XML 里只能写 `FROM ${table}`，而 `${}` 是字符串替换、有注入面，现在的白名单
+校验（`DetailSqlProvider.table()`）恰好长在 SQL 层；搬进 XML 等于把唯一防线挪给调用方。
+
+反射也只剩这一处：`SqlColumnUtil` 按实体字段生成插入列清单。它的失败模式是「响的」（列缺失 →
+插入报错 → 事务回滚 → 报告 FAILED + 告警），所以保留；但它是**隐式约定**，因此由
+`SchemaContractTest` 在构建期把实体字段与 `db/schema.sql` 的列逐一比对，隐式约定变可验证断言。
+
+修改 Mapper 时的三条约束：
+
+1. 加接口方法必须同时加同名 statement —— `MapperXmlLoadTest` 遍历接口方法断言 statement 存在，
+   「XML id 打错」「新增方法忘了补 SQL」会在构建期而不是首个请求时报错。
+2. 状态机语句的 `WHERE ... AND status = ?` 必须写在 XML 里、保持可读，不要在 Java 侧拼装：
+   状态流转的正确性依赖对这几处 CAS 的人工复核。
+3. 明细查询用 `SELECT *` 是有意为之（实体与列一一对应，多余列被忽略）；代价是列改名会静默映射
+   为 null，若将来给明细表加同义列，应改为显式列清单。
 
 ## 4. 配置驱动解析引擎
 
@@ -172,7 +202,7 @@ type 6/7 按关键词归入担保表，并区分「担保信用卡 / 担保贷�
   2. **事务提交阶段失败**（死锁、连接中断等，异常发生在 `submit()` 返回之后，catch 兜不住）→
      注册 `TransactionSynchronization.afterCompletion`，仅在 `STATUS_ROLLED_BACK` 时释放。
      不处理这一条，锁会白占 7 天而主表没有记录，客户被永久拒之门外。
-- 事务内二次校验：在提交事务内对 `t_pbccrc_report` 按「姓名 + 证件 + 近 7 天 `create_time`」做 `SELECT ... FOR UPDATE`（`ReportMapper.findRecentForUpdate`），命中即拒绝；走 `IDX_PBCCRC_CUSTOMER_NAME_ID` 索引（由 `db/migration.sql` 建）。无需对 querylog 做结构变更（`db/migration_2.1_idempotency.sql` 仅做列注释更正）。
+- 事务内二次校验：在提交事务内对 `t_pbccrc_report` 按「姓名 + 证件 + 近 7 天 `create_time`」做 `SELECT ... FOR UPDATE`（`ReportMapper.findRecentForUpdate`），命中即拒绝；走 `IDX_PBCCRC_CUSTOMER_NAME_ID` 索引（新库由 `db/schema.sql`、存量库由 `db/migration.sql` 建）。无需对 querylog 做结构变更（`db/migration_2.1_idempotency.sql` 仅做列注释更正）。
 - `t_pbccrc_report_querylog` 恢复为纯提交流水，`insertIgnore` 冲突只忽略，不参与幂等判定。
 - 先存原文返回 `reportId`，再异步解析。
 
@@ -245,10 +275,12 @@ PENDING ──抢占──> PARSING ──成功──> SUCCESS
 - 本机 MySQL 需 `--no-defaults` 绕开 `my.ini` 客户端段误配的 `server-id=1`。
 - Redis 为必需依赖，无开关：地址 `pbccrc.redis.address`（默认 `redis://127.0.0.1:6379`）、逻辑库 `pbccrc.redis.database`（默认 1）；口令通过 `PBCCRC_REDIS_PWD` 提供（不落盘）。Redis 不可用则应用启动或相关操作直接失败。
 - 构建：`mvn package`；jar：`target/credit-report-1.0.0-SNAPSHOT.jar`
-- 测试：`mvn test`（55 个用例）。分层见 `REVIEW.md` 第三节：E2E 真实报告全流水线（`FullReportParseTest`，7 例）、
+- 数据库初始化顺序：新库执行 `db/schema.sql`（完整基线）；存量库执行 `db/migration.sql`。详见 §3.1。
+- 测试：`mvn test`（61 个用例）。分层见 `REVIEW.md` 第三节：E2E 真实报告全流水线（`FullReportParseTest`，7 例）、
   真实 `submit()` 链路幂等（`SubmitServiceImplIdempotencyTest`，7 例）、解析锁语义（`ParseServiceImplLockTest`，2 例）、
   公共记录未识别篇章留痕（`PublicRecordParserTest`，2 例）、正则回溯风险校验（`RegexSafetyCheckerTest`，11 例）、
-  H2 状态机 CAS（`ReportStateMachineTest`，4 例）、55 条正则全编译与抽取（`RegexEngineTest`，5 例）等。
+  H2 状态机 CAS（`ReportStateMachineTest`，5 例）、Mapper 与 XML 绑定（`MapperXmlLoadTest`，2 例）、
+  实体/基线列一致性（`SchemaContractTest`，3 例）、55 条正则全编译与抽取（`RegexEngineTest`，5 例）等。
 - 完整验证入口：`bash scripts/verify.sh`（`mvn clean test` + `mvn javadoc:javadoc`，打印证据块与结论）。
 - 管理端前端（`admin-web`）：鉴权开启后前端从 `localStorage.pbccrc_token` 读取 token 并统一加
   `X-Auth-Token` 请求头（`src/api/index.js` 的请求拦截器），无需在每个调用点单独处理。
@@ -257,7 +289,9 @@ PENDING ──抢占──> PARSING ──成功──> SUCCESS
 
 1. **6 处正则修复 + type6/7 归类**：待 Alan 复核确认。
 2. **公共记录异常样本**：当前仅有「系统中没有」类样本，其余先原文留痕，样本补齐后细化字段。
-3. **migration.sql**：待 Alan 备份后在执行（主表状态字段）。执行前 `findRecentForUpdate` 没有复合索引。
+3. **存量库迁移尚未执行**：`db/migration.sql` 需在备份后执行。在它执行前，因缺 `status` 等四列，
+   `ReportMapper` 的全部语句都会报 `Unknown column`；因缺 `IDX_PBCCRC_CUSTOMER_NAME_ID`，
+   `findRecentForUpdate` 会退化为全表加锁。**这版代码上线前必须先跑该脚本**，或按 §3.1 用新基线建库。
 4. **公共记录分类的兜底分支**：`PublicRecordParser.classify` 是 if/else-if 链，命中不到任何关键词的
    段落目前**逐条打 `WARN` 日志**（含 `reportId`、记录序号与 200 字原文摘要，并追加一条「共 N 条未识别」
    汇总行），原文同时完整保留在 `common_record_detail`，不丢数据、不再静默。后续与第 5 项（客户概要表
@@ -297,5 +331,25 @@ PENDING ──抢占──> PARSING ──成功──> SUCCESS
 | 加固 | 规则加载期做回溯风险结构校验：嵌套重复／可空重复拒绝加载，多处通配只告警（阈值按实测 reads 定） | `RegexSafetyChecker`、`RuleCache.build` |
 | 观测 | 公共记录未识别类别逐条 `WARN`（reportId + 序号 + 200 字摘要）并汇总条数，原文仍整体保留在 `common_record_detail`；不做静默丢弃，也不写入 `error_msg` | `PublicRecordParser` |
 | 清理 | 删除未被引用的 `CustomerCredit` 实体 | `model/entity` |
+
+### 2026-11-18 SQL 治理
+
+起因：审查 DAO 层时发现「反射生成 SQL」实际只存在于一处，真正的风险是 `schema.sql` 与
+`migration.sql` 各写一份、状态机语句与表结构可能各改各的。
+
+| 类别 | 改动 | 位置 |
+|---|---|---|
+| 基线 | `schema.sql` 补齐状态机四列与 `IDX_PBCCRC_STATUS`、`IDX_PBCCRC_CUSTOMER_NAME_ID`，并在文件头写明「新库用它、存量库用 migration.sql」 | `db/schema.sql`、`db/migration.sql` |
+| 基线 | `report_querylog.content_hash` 列注释改正（不参与幂等）；说明其唯一键因该列恒为 NULL 实际不生效 | `db/schema.sql` |
+| 重构 | 36 条注解 SQL 迁入 `resources/mapper/*.xml`；`markSuccess` 由 1.4 KB 单行改为 34 行逐列；后台 count/list 共用 `AdminWhere` 片段 | `mapper/`、各 Mapper 接口 |
+| 例外 | `DetailMapper` 保留 Provider（动态表名 + 白名单校验在 SQL 层），不搬 XML | `DetailMapper`、`DetailSqlProvider` |
+| 修复 | `markFailed` 增加 `AND status='PARSING'`：看门狗在 `markSuccess` 提交后迟到判超时时不再把成功报告改回 FAILED | `ReportMapper.xml` |
+| 测试 | `MapperXmlLoadTest` 遍历接口方法断言 statement 存在；`SchemaContractTest` 比对实体字段/XML 赋值列与 `db/schema.sql` | `src/test/.../dao` |
+| 测试 | `ReportStateMachineTest` 新增「迟到判失败不覆盖 SUCCESS」用例（5 例） | 同上 |
+
+未采纳 MyBatis-Plus：本项目 38 条语句、无多表 join，MP 省下的样板有限；而 `updateById` 默认
+`NOT_NULL` 策略会让 `markSuccess` 清空 `error_msg` 的语义静默失效，批量插入需自定义
+`SqlInjector` 才能保住现有的「500 行一条多行 INSERT」（评审 3.7），收益不抵迁移风险。
+
 
 
