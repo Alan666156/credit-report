@@ -18,8 +18,11 @@ import org.redisson.api.RBucket;
 import org.redisson.api.RedissonClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.LocalDateTime;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -37,6 +40,9 @@ import java.util.concurrent.TimeUnit;
 @Slf4j
 @Service
 public class SubmitServiceImpl implements SubmitService {
+
+    /** 提交幂等锁的键前缀，完整键为 {@code pbccrc:submit:lock:{md5(证件|姓名)}}。 */
+    private static final String IDENTITY_LOCK_PREFIX = "pbccrc:submit:lock:";
 
     private final ReportMapper reportMapper;
     private final ReportContentMapper contentMapper;
@@ -71,6 +77,11 @@ public class SubmitServiceImpl implements SubmitService {
      * 近 7 天是否已有同身份提交做二次校验；4）插入主表、原文与查询流水；5）任一环节重复
      * 或异常则回滚并释放锁。窗口（7 天）由 {@code pbccrc.redis.submit-lock-ttl-days} 统一控制。</p>
      *
+     * <p>锁的释放必须覆盖两种失败：方法体内的异常（catch 后立即释放），以及<b>事务提交阶段</b>
+     * 的失败（死锁、连接中断等，异常发生在方法返回之后，catch 兜不住）。后者若不处理，锁会
+     * 白占 7 天而主表没有记录，客户被永久拒之门外，故额外注册事务回滚回调兜底。释放前用
+     * {@code compareAndSet} 校验持有者令牌，避免 TTL 过期后误删同身份新请求的锁。</p>
+     *
      * @param req 提交请求，含证件号、姓名、申请编号、HTML 原文及操作人
      * @return 新生成报告的主键 reportId
      * @throws BizException 当该客户 7 天内已提交过时抛出
@@ -87,11 +98,14 @@ public class SubmitServiceImpl implements SubmitService {
         int windowDays = properties.getRedis().getSubmitLockTtlDays();
         // 操作人优先取鉴权上下文中的可信身份，取不到才回退到请求体（评审 2.5）
         String operator = OperatorContext.getOrDefault(req.getOperator());
+        // 锁值用一次性令牌而非幂等键：同身份的两次请求令牌不同，释放时才能确认「删的是自己的锁」
+        String lockToken = UUID.randomUUID().toString();
         // Redis 为必需依赖：用带 7 天 TTL 的原子 set 抢占身份幂等锁，trySet 失败即拒
-        RBucket<String> bucket = redissonClient.getBucket("pbccrc:submit:lock:" + identityKey);
-        if (!bucket.trySet(identityKey, windowDays, TimeUnit.DAYS)) {
+        RBucket<String> bucket = redissonClient.getBucket(IDENTITY_LOCK_PREFIX + identityKey);
+        if (!bucket.trySet(lockToken, windowDays, TimeUnit.DAYS)) {
             throw new BizException(ResultCode.DUPLICATE_SUBMIT);
         }
+        releaseOnRollback(bucket, lockToken);
         try {
             // 二次校验：事务内行锁查询近 N 天同身份报告，命中即视为窗口内重复提交
             Integer recentId = reportMapper.findRecentForUpdate(customerName, customerIdCard, LocalDateTime.now().minusDays(windowDays));
@@ -123,9 +137,48 @@ public class SubmitServiceImpl implements SubmitService {
             log.info("report {} 提交成功, 待异步解析", report.getId());
             return report.getId();
         } catch (RuntimeException e) {
-            // 异常时释放幂等锁，避免误拦截后续重试
-            bucket.delete();
+            // 方法体内的失败：立即释放，避免误拦截后续重试
+            releaseLock(bucket, lockToken);
             throw e;
+        }
+    }
+
+    /**
+     * 注册事务回滚后的锁释放回调，兜住「方法体正常但提交阶段失败」的场景。
+     *
+     * <p>无事务上下文时（例如直接 new 出来做单测）不注册，由方法体 catch 负责释放。</p>
+     *
+     * @param bucket    幂等锁
+     * @param lockToken 本次持有的锁令牌
+     */
+    private void releaseOnRollback(RBucket<String> bucket, String lockToken) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status == TransactionSynchronization.STATUS_ROLLED_BACK) {
+                    releaseLock(bucket, lockToken);
+                }
+            }
+        });
+    }
+
+    /**
+     * 释放幂等锁：仅当锁值仍是本次令牌时才删除，避免删掉 TTL 过期后同身份新请求占住的锁。
+     *
+     * @param bucket    幂等锁
+     * @param lockToken 本次持有的锁令牌
+     */
+    private void releaseLock(RBucket<String> bucket, String lockToken) {
+        try {
+            if (!bucket.compareAndSet(lockToken, null)) {
+                log.debug("幂等锁持有者已变更，跳过释放");
+            }
+        } catch (RuntimeException e) {
+            // 释放失败不影响主流程，最坏是锁留到 TTL 到期
+            log.warn("释放提交幂等锁失败，将由 TTL 到期自动失效", e);
         }
     }
 }

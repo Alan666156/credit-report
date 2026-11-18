@@ -6,12 +6,14 @@ import com.workbuddy.pbccrc.model.entity.Report;
 import com.workbuddy.pbccrc.service.AlertNotifier;
 import com.workbuddy.pbccrc.service.ParseService;
 import lombok.extern.slf4j.Slf4j;
+import org.redisson.api.RBucket;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 解析补偿定时任务。
@@ -26,6 +28,12 @@ import java.util.List;
 @Slf4j
 @Component
 public class CompensationJob {
+
+    /** 死信告警去重键前缀，完整键为 {@code pbccrc:deadletter:alerted:{reportId}}。 */
+    private static final String DEAD_LETTER_ALERT_PREFIX = "pbccrc:deadletter:alerted:";
+
+    /** 死信告警去重周期（小时）：同一份未解决的死信每天重新提醒一次。 */
+    private static final long DEAD_LETTER_ALERT_TTL_HOURS = 24L;
 
     private final ReportMapper reportMapper;
     private final ParseService parseService;
@@ -85,19 +93,36 @@ public class CompensationJob {
                     parseService.parseAsync(id);
                 }
             }
-            // 超过重试上限进入死信，仅预警
+            // 超过重试上限进入死信，仅预警；同一份死信 24 小时内只报一次，避免每 5 分钟刷屏
             List<Report> dead = reportMapper.findDeadLetters(maxRetry);
+            int alerted = 0;
             for (Report r : dead) {
-                alert.notify("征信报告进入死信", "reportId=" + r.getId()
-                        + ", 客户=" + r.getCustomerName() + ", 原因=" + r.getErrorMsg());
+                if (markAlerted(r.getId())) {
+                    alert.notify("征信报告进入死信", "reportId=" + r.getId()
+                            + ", 客户=" + r.getCustomerName() + ", 原因=" + r.getErrorMsg());
+                    alerted++;
+                }
             }
             if (!dead.isEmpty()) {
-                log.warn("死信清单: {} 份待人工处理", dead.size());
+                log.warn("死信清单: {} 份待人工处理，本轮新告警 {} 份", dead.size(), alerted);
             }
         } finally {
             if (lock.isHeldByCurrentThread()) {
                 lock.unlock();
             }
         }
+    }
+
+    /**
+     * 死信告警去重：以 Redis 原子占位保证同一份报告在一个告警周期内只通知一次。
+     *
+     * <p>未解决的死信每天会重新提醒一次（TTL 到期后重新占位），既不会漏，也不会刷屏。</p>
+     *
+     * @param reportId 报告主键
+     * @return 本次是首次告警返回 true
+     */
+    private boolean markAlerted(Integer reportId) {
+        RBucket<String> bucket = redissonClient.getBucket(DEAD_LETTER_ALERT_PREFIX + reportId);
+        return bucket.trySet("1", DEAD_LETTER_ALERT_TTL_HOURS, TimeUnit.HOURS);
     }
 }

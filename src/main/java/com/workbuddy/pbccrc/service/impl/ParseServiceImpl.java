@@ -1,5 +1,6 @@
 package com.workbuddy.pbccrc.service.impl;
 
+import cn.hutool.crypto.digest.DigestUtil;
 import com.workbuddy.pbccrc.config.PbccrcProperties;
 import com.workbuddy.pbccrc.dao.ReportContentMapper;
 import com.workbuddy.pbccrc.dao.ReportMapper;
@@ -34,6 +35,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Slf4j
 @Service
 public class ParseServiceImpl implements ParseService {
+
+    /** 解析互斥锁的键前缀，完整键为 {@code pbccrc:parse:{reportId}}。 */
+    private static final String PARSE_LOCK_PREFIX = "pbccrc:parse:";
 
     private final ReportMapper reportMapper;
     private final ReportContentMapper contentMapper;
@@ -70,22 +74,49 @@ public class ParseServiceImpl implements ParseService {
     /**
      * 异步触发报告解析。
      *
-     * <p>先加 Redis 分布式锁再执行解析（Redis 为必需依赖），避免多节点重复解析同一报告。</p>
+     * <p>先加 Redis 分布式锁再执行解析（Redis 为必需依赖），避免多节点重复解析同一报告。
+     * 加锁**不等待**（{@code tryLock(0, lease)}）：拿不到说明已有节点在解析，直接跳过，由补偿
+     * 任务下一轮重投。原实现用阻塞的 {@code lock(30min)}，补偿重投时新线程会原地等旧线程最长
+     * 30 分钟，白占一个线程与数据库连接。</p>
+     *
+     * <p>租期取解析超时的两倍：看门狗判超时后线程并不会立刻停下（正则一旦跑飞不可中断），
+     * 租期必须活过「超时判定」这个时间点，才能让补偿的重投在 tryLock 处被挡住，避免同一份
+     * 报告出现两个解析线程同时删改明细。</p>
      *
      * @param reportId 报告主键
      */
     @Override
     @Async("parseTaskExecutor")
     public void parseAsync(Integer reportId) {
-        RLock lock = redissonClient.getLock("pbccrc:parse:" + reportId);
+        RLock lock = redissonClient.getLock(PARSE_LOCK_PREFIX + reportId);
+        boolean locked;
         try {
-            lock.lock(30, TimeUnit.MINUTES);
+            locked = lock.tryLock(0, leaseMinutes(), TimeUnit.MINUTES);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("report {} 获取解析锁被中断，跳过本次解析", reportId);
+            return;
+        }
+        if (!locked) {
+            log.info("report {} 已有节点在解析，跳过重复投递", reportId);
+            return;
+        }
+        try {
             doParse(reportId);
         } finally {
             if (lock.isHeldByCurrentThread()) {
                 lock.unlock();
             }
         }
+    }
+
+    /**
+     * 计算解析锁租期（分钟）：解析超时的两倍，且不低于 10 分钟。
+     *
+     * @return 锁租期分钟数
+     */
+    private int leaseMinutes() {
+        return Math.max(properties.getParse().getParseTimeoutMinutes() * 2, 10);
     }
 
     /**
@@ -160,6 +191,7 @@ public class ParseServiceImpl implements ParseService {
             ctx.setCustomerName(report.getCustomerName());
             ctx.setAppNo(report.getAppNo());
             ctx.setContentHash(report.getContentHash());
+            verifyContentHash(ctx, report, content.getContent());
 
             pipeline.parse(ctx, onProgress);
             if (timedOut.get()) {
@@ -180,6 +212,29 @@ public class ParseServiceImpl implements ParseService {
         } finally {
             running.set(false);
             watchdog.interrupt();
+        }
+    }
+
+    /**
+     * 校验报告正文与提交时登记的 {@code content_hash} 是否一致，不一致只留痕不中断。
+     *
+     * <p>该字段在提交时写入（正文 MD5），但此前从未被读取，等于没有完整性校验。这里在解析前
+     * 对一次正文：不一致说明原文在库中损坏或被改动，解析结果可能失真，记入 {@code error_msg}
+     * 供人工核查；不直接判失败，避免因一条告警把本可解析的报告打成 FAILED 并反复重试。</p>
+     *
+     * @param ctx     解析上下文
+     * @param report  报告主表记录
+     * @param content 报告正文
+     */
+    private void verifyContentHash(ParseContext ctx, Report report, String content) {
+        if (report.getContentHash() == null) {
+            return;
+        }
+        String actual = DigestUtil.md5Hex(content);
+        if (!report.getContentHash().equals(actual)) {
+            log.warn("report {} 正文与登记的内容哈希不一致: expect={}, actual={}",
+                    ctx.getReportId(), report.getContentHash(), actual);
+            ctx.warn("报告正文与登记的内容哈希不一致，正文可能被改动或截断");
         }
     }
 }

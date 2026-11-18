@@ -16,6 +16,8 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.redisson.api.RBucket;
 import org.redisson.api.RedissonClient;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
@@ -44,6 +46,8 @@ class SubmitServiceImplIdempotencyTest {
 
     /** key -> 到期纳秒，模拟 Redis 带 TTL 的原子占位。 */
     private final ConcurrentHashMap<String, Long> locks = new ConcurrentHashMap<>();
+    /** key -> 持有者令牌，模拟 compareAndSet 的「只删自己那把锁」语义。 */
+    private final ConcurrentHashMap<String, String> tokens = new ConcurrentHashMap<>();
     private RedissonClient client;
     private ReportMapper reportMapper;
     private SubmitServiceImpl service;
@@ -51,11 +55,13 @@ class SubmitServiceImplIdempotencyTest {
     @BeforeEach
     void setUp() {
         locks.clear();
+        tokens.clear();
         client = mock(RedissonClient.class);
         doAnswer(inv -> {
             String key = inv.getArgument(0);
             RBucket<String> bucket = mock(RBucket.class);
             when(bucket.trySet(any(), anyLong(), any(TimeUnit.class))).thenAnswer(trySet -> {
+                String token = trySet.getArgument(0);
                 long ttl = trySet.getArgument(1);
                 TimeUnit unit = trySet.getArgument(2);
                 final boolean[] acquired = {false};
@@ -67,12 +73,22 @@ class SubmitServiceImplIdempotencyTest {
                     acquired[0] = true;
                     return now + unit.toNanos(ttl);   // 抢占成功，写入到期时间
                 });
+                if (acquired[0]) {
+                    tokens.put(key, token);
+                }
                 return acquired[0];
             });
-            doAnswer(del -> {
+            // 释放走 compareAndSet(token, null)：值仍是本次令牌才删除，等价于 Redis 的原子比较删除
+            when(bucket.compareAndSet(any(), isNull())).thenAnswer(cas -> {
+                String expect = cas.getArgument(0);
+                String holder = tokens.get(key);
+                if (holder == null || !holder.equals(expect)) {
+                    return false;
+                }
+                tokens.remove(key);
                 locks.remove(key);
                 return true;
-            }).when(bucket).delete();
+            });
             return bucket;
         }).when(client).getBucket(anyString());
 
@@ -154,5 +170,52 @@ class SubmitServiceImplIdempotencyTest {
                 () -> service.submit(req("张三", "110101199001011234", "<html>A</html>")));
         verify(reportMapper, never()).insert(any(Report.class));
         verify(reportMapper, never()).findRecentForUpdate(anyString(), anyString(), any());
+    }
+
+    /**
+     * 事务回滚必须释放幂等锁。
+     *
+     * <p>提交阶段的失败（死锁、连接中断）发生在 {@code submit()} 返回之后，方法体的 catch
+     * 根本兜不住：锁会白占 7 天，而主表没有记录，客户被永久拒之门外。这里模拟 Spring 在回滚后
+     * 回调 {@code afterCompletion}，断言锁被释放。</p>
+     */
+    @Test
+    void releasesLockWhenTransactionRollsBack() {
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            service.submit(req("张三", "110101199001011234", "<html>A</html>"));
+            assertEquals(1, locks.size(), "提交成功后锁应保留，用于挡住 7 天内的重复提交");
+
+            completeTransaction(TransactionSynchronization.STATUS_ROLLED_BACK);
+
+            assertTrue(locks.isEmpty(), "回滚后必须释放幂等锁，否则客户被误锁 7 天且库里没有报告");
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    /** 事务正常提交时锁必须保留，否则 7 天窗口形同虚设。 */
+    @Test
+    void keepsLockWhenTransactionCommits() {
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            service.submit(req("张三", "110101199001011234", "<html>A</html>"));
+            completeTransaction(TransactionSynchronization.STATUS_COMMITTED);
+            assertEquals(1, locks.size(), "提交成功后锁必须保留，覆盖 7 天窗口");
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    /**
+     * 模拟 Spring 事务管理器在提交/回滚结束后回调已注册的同步器。
+     *
+     * @param status {@link TransactionSynchronization#STATUS_COMMITTED} 或
+     *               {@link TransactionSynchronization#STATUS_ROLLED_BACK}
+     */
+    private void completeTransaction(int status) {
+        for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
+            sync.afterCompletion(status);
+        }
     }
 }
