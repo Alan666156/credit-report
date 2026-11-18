@@ -6,7 +6,9 @@ import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 报告 HTML 分块器。
@@ -18,6 +20,22 @@ import java.util.List;
  * @date 2026-11-17
  */
 public final class BlockSplitter {
+
+    /** 基础区块名：信贷记录。 */
+    public static final String SECTION_CREDIT = "信贷记录";
+    /** 基础区块名：公共记录。 */
+    public static final String SECTION_PUBLIC = "公共记录";
+    /** 基础区块名：查询记录。 */
+    public static final String SECTION_QUERY = "查询记录";
+
+    /**
+     * 一份征信报告必须具备的基础区块。
+     *
+     * <p>判据是「结构存在」而非「有数据」：真实报告即使三类记录全为空，版式上仍会保留
+     * 这三个区块标题（区块内为空或写着「系统中没有」）。三块全无说明输入不是征信报告，
+     * 或 HTML 已被截断。</p>
+     */
+    public static final List<String> REQUIRED_SECTIONS = List.of(SECTION_CREDIT, SECTION_PUBLIC, SECTION_QUERY);
 
     private BlockSplitter() {
     }
@@ -35,6 +53,8 @@ public final class BlockSplitter {
         private String descriptionText = "";
         private String creditIntroText = "";
         private String queryIntroText = "";
+        /** 原文中识别到的基础区块名，用于判定输入是否为一份征信报告。 */
+        private Set<String> sections = new LinkedHashSet<>();
     }
 
     /**
@@ -116,6 +136,15 @@ public final class BlockSplitter {
                 p.setQueryIntroText(HtmlUtil.clean(tx));
             }
         }
+        // 基础区块只认 .h1 标题本身，不认正文里出现的同名词（如「说明」中的解释文字），
+        // 否则任意含「查询记录」字样的 HTML 都会被误判成征信报告
+        for (Element el : doc.select(".h1")) {
+            String section = HtmlUtil.clean(el.text());
+            if (REQUIRED_SECTIONS.contains(section)) {
+                p.getSections().add(section);
+            }
+        }
+
         p.setPublicText(extractPublicText(doc));
 
         for (Element ol : doc.select("ol.olstyle")) {

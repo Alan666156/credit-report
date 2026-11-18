@@ -8,7 +8,11 @@ import org.springframework.stereotype.Component;
  *
  * <p>先由 {@link BlockSplitter} 切块，再依次调用报告头、信息概要、信贷明细、
  * 公共记录、查询记录、说明六个解析器。单个区块失败只记录告警并继续其余区块
- * （部分成功），所有告警汇总写入主表 error_msg 留痕，不阻断整份报告。</p>
+ * （部分成功），告警只进日志，不写入主表 {@code error_msg}。</p>
+ *
+ * <p>{@code error_msg} 只承载「报告为什么失败」，由失败处理链路写入；解析降级
+ * （某块标题未识别、某条明细套规则失败）属于可容忍的部分成功，写进 {@code error_msg}
+ * 会让监控把正常报告误判成异常，也会让后台展示凭空多出一条错误。</p>
  *
  * @author Alan
  * @date 2026-11-17
@@ -40,7 +44,7 @@ public class ParsePipeline {
      * 对一份报告执行完整解析。
      *
      * <p>六个区块逐一通过 {@link #safe} 包装调用，任一区块抛异常只记录告警；
-     * 解析结束后若有告警则汇总写入主表 error_msg。</p>
+     * 解析结束后告警汇总进日志，不写主表 {@code error_msg}——降级不代表报告有问题。</p>
      *
      * @param ctx 解析上下文
      */
@@ -59,6 +63,7 @@ public class ParsePipeline {
      */
     public void parse(ParseContext ctx, Runnable onProgress) {
         BlockSplitter.Parts parts = BlockSplitter.split(ctx.getHtml());
+        ctx.setSections(parts.getSections());
         safe(ctx, "报告头", () -> ReportHeadParser.parse(ctx, parts));
         advance(onProgress);
         safe(ctx, "信息概要", () -> CreditSummaryParser.parse(ctx, parts));
@@ -73,9 +78,7 @@ public class ParsePipeline {
         advance(onProgress);
 
         if (!ctx.getWarnings().isEmpty()) {
-            String msg = String.join("; ", ctx.getWarnings());
-            ctx.getReport().setErrorMsg(msg);
-            log.warn("report {} 部分区块解析告警: {}", ctx.getReportId(), msg);
+            log.warn("report {} 部分区块解析告警: {}", ctx.getReportId(), String.join("; ", ctx.getWarnings()));
         }
     }
 

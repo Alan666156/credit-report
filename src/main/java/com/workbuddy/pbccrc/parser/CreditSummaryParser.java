@@ -1,6 +1,7 @@
 package com.workbuddy.pbccrc.parser;
 
 import com.workbuddy.pbccrc.model.entity.Report;
+import lombok.extern.slf4j.Slf4j;
 import org.jsoup.nodes.Element;
 
 import java.util.List;
@@ -11,9 +12,13 @@ import java.util.List;
  * <p>解析「账户数」等 5×3 计数表，按行标签将信用卡、购房贷款、其他贷款三类
  * 的账户总数、未结清数、逾期数、90天以上逾期数、担保笔数回填到主表 15 个汇总字段。</p>
  *
+ * <p>报告可能完全没有账户数据（合法的空报告），此时页面上不会出现信息概要表。这属于
+ * 正常情况而非解析异常，因此只记 debug 日志、不产生告警，避免空报告被误标成有问题的报告。</p>
+ *
  * @author Alan
  * @date 2026-11-17
  */
+@Slf4j
 public final class CreditSummaryParser {
 
     private CreditSummaryParser() {
@@ -28,7 +33,8 @@ public final class CreditSummaryParser {
     public static void parse(ParseContext ctx, BlockSplitter.Parts parts) {
         Element table = parts.getSummaryTable();
         if (table == null) {
-            ctx.warn("未找到信息概要表，跳过汇总回填");
+            // 空报告本来就没有概要表，是合法输入，不能当成告警往失败方向靠
+            log.debug("report {} 无信息概要表，跳过汇总回填", ctx.getReportId());
             return;
         }
         Report r = ctx.getReport();

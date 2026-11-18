@@ -75,8 +75,9 @@
     <!--
       回填解析结果并置成功。列多故拆行；列清单必须与 Report 实体及 t_pbccrc_report
       实际结构一致，任一侧增删都要同步改动这里。
-      error_msg 显式回填：成功时传入 null 用于清除历史告警，依赖
-      application.yml 的 jdbc-type-for-null: 'null' 才能把 NULL 真正下发到驱动。
+      error_msg 显式回填 null：成功报告不携带任何错误信息（解析降级只进日志，
+      见 DESIGN 5.4），同时清除上一轮失败原因。依赖 application.yml 的
+      jdbc-type-for-null: 'null' 才能把 NULL 真正下发到驱动。
     -->
     <update id="markSuccess">
         UPDATE t_pbccrc_report

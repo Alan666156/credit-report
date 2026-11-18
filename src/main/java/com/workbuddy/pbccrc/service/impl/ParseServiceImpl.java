@@ -7,6 +7,7 @@ import com.workbuddy.pbccrc.dao.ReportMapper;
 import com.workbuddy.pbccrc.engine.ParseDeadline;
 import com.workbuddy.pbccrc.model.entity.Report;
 import com.workbuddy.pbccrc.model.entity.ReportContent;
+import com.workbuddy.pbccrc.parser.BlockSplitter;
 import com.workbuddy.pbccrc.parser.ParseContext;
 import com.workbuddy.pbccrc.parser.ParsePipeline;
 import com.workbuddy.pbccrc.service.AlertNotifier;
@@ -18,6 +19,7 @@ import org.redisson.api.RedissonClient;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -199,6 +201,7 @@ public class ParseServiceImpl implements ParseService {
                 log.warn("report {} 已完成解析但此前已判超时，放弃落库", reportId);
                 return;
             }
+            ensureReportStructure(ctx);
             writer.write(ctx);
             log.info("report {} 解析入库完成, 明细={}", reportId,
                     ctx.getCreditCards().size() + ctx.getLoans().size() + ctx.getQueryRecords().size());
@@ -216,11 +219,36 @@ public class ParseServiceImpl implements ParseService {
     }
 
     /**
+     * 校验原文具备征信报告的基础区块，缺失则判失败。
+     *
+     * <p>判据是「结构存在」而不是「有数据」：真实报告即使完全没有信贷／公共／查询记录，
+     * 版式上仍会保留这三个区块标题。三块全无说明输入根本不是征信报告，或 HTML 已被截断——
+     * 此时若照常落库，会产出一份 status=SUCCESS、明细全空、看起来完全正常的报告，
+     * 把「上游传错文件」这件事彻底掩盖掉。</p>
+     *
+     * <p>反过来，结构齐全但一条明细都解析不出是合法的（空报告），照常置成功。</p>
+     *
+     * @param ctx 解析上下文
+     * @throws IllegalStateException 缺少任一基础区块时抛出，由调用方标记为 FAILED
+     */
+    private void ensureReportStructure(ParseContext ctx) {
+        List<String> missing = BlockSplitter.REQUIRED_SECTIONS.stream()
+                .filter(section -> !ctx.getSections().contains(section))
+                .toList();
+        if (missing.isEmpty()) {
+            return;
+        }
+        throw new IllegalStateException("无法识别为征信报告：缺少基础区块 " + missing
+                + "，已识别区块 " + ctx.getSections());
+    }
+
+    /**
      * 校验报告正文与提交时登记的 {@code content_hash} 是否一致，不一致只留痕不中断。
      *
      * <p>该字段在提交时写入（正文 MD5），但此前从未被读取，等于没有完整性校验。这里在解析前
-     * 对一次正文：不一致说明原文在库中损坏或被改动，解析结果可能失真，记入 {@code error_msg}
-     * 供人工核查；不直接判失败，避免因一条告警把本可解析的报告打成 FAILED 并反复重试。</p>
+     * 对一次正文：不一致说明原文在库中损坏或被改动，解析结果可能失真，打一条 WARN 并计入
+     * 解析告警供排查；不直接判失败，避免因一条告警把本可解析的报告打成 FAILED 并反复重试。
+     * 告警只进日志，不写 {@code error_msg}。</p>
      *
      * @param ctx     解析上下文
      * @param report  报告主表记录

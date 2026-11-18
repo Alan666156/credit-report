@@ -163,7 +163,7 @@ SQL 统一放在 `src/main/resources/mapper/*.xml`（由 `mybatis.mapper-locatio
    - `PublicRecordParser` — 公共记录
    - `QueryRecordParser` — 查询记录
    - `DescriptionParser` — 说明
-3. **容错**：`ParsePipeline.safe()` 对每块 try/catch，单块失败只记 warning 到 `error_msg`，不中断整份报告（部分成功）。
+3. **容错**：`ParsePipeline.safe()` 对每块 try/catch，单块失败只记 warning 日志，不中断整份报告（部分成功）。warning **不写入 `error_msg`**——该字段只承载失败原因，见 5.4。
 4. **入库**：`ParseResultWriter` 回填主表汇总字段 + 各明细表。所有明细（信用卡/贷款/担保/资产处置/代偿/公共记录各类）都必须保留 `content` 原文，便于规则变更后回溯与对账。
 
 ### 5.1 解析类型分流（`ParseType`）
@@ -184,8 +184,51 @@ type 6/7 按关键词归入担保表，并区分「担保信用卡 / 担保贷�
 ### 5.2 正文完整性校验（`content_hash`）
 
 提交时把正文 MD5 写入 `t_pbccrc_report.content_hash`。解析前重算一次并与登记值比对，不一致时
-记一条 warning 到 `error_msg`（「报告正文与登记的内容哈希不一致」），**判成功但留痕**，不直接
+打一条 `WARN` 并计入解析告警（**只进日志**），**判成功不打断**，不直接
 判失败——避免因正文损坏把可解析的报告打成 FAILED 后反复重试。该字段不参与提交幂等。
+
+### 5.3 报告结构校验（判失败的唯一依据）
+
+「解析成功」的判据是**结构存在**，不是**有数据**。真实征信报告即使完全没有任何信贷／公共／查询
+记录，版式上仍会保留三个基础区块标题：
+
+| 基础区块 | 样例中的形态 |
+|---|---|
+| 信贷记录 | `<strong class="h1">信贷记录</strong>` |
+| 公共记录 | `<td class="h1">公共记录</td>` |
+| 查询记录 | `<td class="h1">查询记录</td>` |
+
+`BlockSplitter.split` 扫 `.h1` 把命中的区块名记入 `Parts.sections`，`ParseServiceImpl` 在落库前
+用 `ensureReportStructure` 校验三块齐全（`BlockSplitter.REQUIRED_SECTIONS`）。因此：
+
+| 输入 | 结果 | 说明 |
+|---|---|---|
+| 结构齐全 + 有明细 | SUCCESS | 正常路径 |
+| 结构齐全 + **零明细** | **SUCCESS** | 空报告是合法的：解析出空数据，主表仍回填报告编号等头部字段 |
+| 缺任一基础区块 | **FAILED** | `error_msg` 写明缺失项与已识别项，进重试／死信流程 |
+
+只认 `.h1` 标题本身，不认正文里出现的同名字样——否则任何含「查询记录」四字的 HTML 都会被误判。
+这条规则拦的是「上游传错文件 / HTML 被截断」：修复前这类输入会产出 `status=SUCCESS`、明细全空、
+看起来完全正常的报告，把问题彻底掩盖掉。
+
+### 5.4 `error_msg` 的语义：只说明失败原因
+
+`error_msg` 只有一个用途——回答「这份报告为什么失败」。它由失败链路（`markFailed`）写入，
+成功时恒为 `NULL`（`markSuccess` 显式回填 null 以清除历史值）。
+
+解析过程中的**降级**——某块标题没认出来、某条明细套规则失败、公共记录出现未知类别、正文哈希
+对不上——属于**部分成功**：报告本身仍然可用，明细能落多少落多少。这类信息只进日志
+（`ParsePipeline` 汇总打一条 `WARN`），**不写 `error_msg`**。原因有两条：
+
+- 后台展示会把 `error_msg` 当成错误提示，正常报告凭空多出一条「错误」；
+- 按「`error_msg` 非空即异常」配置的监控会持续误报。
+
+由此得到一个直接的业务结论：**任何一类明细为空都是正常结果**。报告本身可能就没有信用卡、
+没有公共记录、没有查询记录，后台照常展示原始 HTML 报告即可，不需要为空明细造任何告警或提示。
+真正需要警惕的只有「结构缺失」（5.3），那会被判 FAILED。
+
+空报告连信息概要表都不会有（页面上没有账户数据时该表不渲染），因此
+`CreditSummaryParser` 找不到概要表时只记 `debug` 日志、不产生告警，主表 15 个汇总字段保持 NULL。
 
 
 ## 6. 提交幂等与状态机
@@ -305,6 +348,18 @@ PENDING ──抢占──> PARSING ──成功──> SUCCESS
    且 `java.util.regex` 本身不响应中断。现在的防线是 §4.4 的加载期拒绝，运行期仍有残余风险。
    若后续需要彻底止损，只有两条路：换 RE2/J（线性时间，需先扫现有规则是否用到反向引用/环视），
    或把正则执行放到独立进程、超时 `kill`。
+7. **真实中间件验证不在 `mvn test` 内**：`SubmitRealRedisSmoke`、`ReportMapperRealSqlSmoke`、
+   `OtherMappersRealSqlSmoke` 三个类名不以 `Test` 结尾，CI 不会执行，改动 SQL 后需手动跑：
+   ```bash
+   PBCCRC_DB_PWD=xxx PBCCRC_REDIS_PWD=xxx \
+   PBCCRC_DB_URL='jdbc:mysql://127.0.0.1:3306/pbccrc_verify?...' \
+     mvn -Dtest=SubmitRealRedisSmoke,ReportMapperRealSqlSmoke,OtherMappersRealSqlSmoke test
+   ```
+   建议指向独立的验证库（如 `pbccrc_verify`，用 `db/schema.sql` 建库），不要指向开发库。
+   这是当前唯一的验证盲区来源：`mvn test` 全绿并不代表方言正确。
+   > 教训：`SubmitRealRedisSmoke` 曾在 SQL 迁 XML 后静默失效整整一轮，正因为没人跑它。
+8. ~~**`SUCCESS` 状态下 `error_msg` 可能非空（待决）**~~ **已决（§5.4）**：告警只进日志，不再写
+   `error_msg`；`CreditSummaryParser` 找不到概要表时降级为 `debug`。成功报告 `error_msg` 恒为 NULL。
 
 ## 10. 变更记录
 
@@ -350,6 +405,64 @@ PENDING ──抢占──> PARSING ──成功──> SUCCESS
 未采纳 MyBatis-Plus：本项目 38 条语句、无多表 join，MP 省下的样板有限；而 `updateById` 默认
 `NOT_NULL` 策略会让 `markSuccess` 清空 `error_msg` 的语义静默失效，批量插入需自定义
 `SqlInjector` 才能保住现有的「500 行一条多行 INSERT」（评审 3.7），收益不抵迁移风险。
+
+### 2026-11-18 真实环境自测
+
+起因：SQL 迁入 XML 后复盘发现，全部 62 个用例跑在 H2 的 MySQL 兼容模式上，`SubmitRealRedisSmoke`
+虽然是唯一连真实中间件的用例，却不随 `mvn test` 执行——**生产口径的 SQL 此前零验证**。
+本轮连本机 MySQL 8.0.27 与 Redis 实测，暴露了一个真实回归并补上三层验证。
+
+| 类别 | 内容 |
+|---|---|
+| 发现的缺陷 | SQL 迁 XML 后 `SubmitRealRedisSmoke` 失效：它手工 `new Configuration()` 并只 `addMapper(接口)`，不读 XML，首个 `submit` 即抛 `Invalid bound statement: ReportMapper.findRecentForUpdate`。**测试失效但无人察觉**，因为它不在 `mvn test` 里 |
+| 根因 | 手工构建的 MyBatis `Configuration` 与 `application.yml` 口径不一致：`map-underscore-to-camel-case` 默认 false、`jdbc-type-for-null` 默认 OTHER、`call-setters-on-nulls` 默认 false。默认值跑出来的结论不代表线上行为 |
+| 修复 | 新增 `MapperXml.productionLike(env, mappers...)` 作为唯一口径来源（三项显式对齐 yml 并装载 XML），三个 smoke 统一改用它 |
+| 新增验证 | `ReportMapperRealSqlSmoke`：主表 17 条语句逐条真库执行，含 `DATE_SUB(NOW(), INTERVAL ? MINUTE)`、`LIMIT #{offset}, #{pageSize}`、`markSuccess` 34 个 SET 项的逐字段校验（列序错位即失败）、状态机 CAS 守卫（SUCCESS 不被迟到失败覆盖） |
+| 新增验证 | `OtherMappersRealSqlSmoke`：其余 5 个 Mapper 19 条语句，含 `INSERT IGNORE` + `CURDATE()`（流水表 `create_time` 是 date 而非 datetime）、`RuleMapper` 两表 JOIN、12 条明细查询的表名列名 |
+| 新增验证 | `MapperLocationWiringTest`：直接读 `application.yml` 的 `mybatis.mapper-locations` 原值，用 Spring 同一个 `PathMatchingResourcePatternResolver` 匹配，断言 6 个 XML 一个不落且接口方法全部有 statement。此前该配置写错不报编译错，只在上线首个请求炸 |
+| 结论 | `db/schema.sql` 在 MySQL 8.0.27 上直接建出 19 张表，四列与两索引齐全；36 条语句全部执行通过；真实 Redisson 锁 TTL 实测 604799961ms（≈7 天），同身份不同正文被真实 `trySet` 拒绝 |
+| 顺带证实 | 流水表唯一键 `(customer_name, customer_id_card, content_hash)` 因 `content_hash` 恒为 NULL 确实不生效——连插两次得两行，已写成 `OtherMappersRealSqlSmoke` 的断言，杜绝「有唯一键所以能去重」的误判 |
+
+三个 smoke 类名不以 `Test` 结尾，仍不并入 `mvn test`（避免 CI 依赖外部中间件），运行方式见
+§9 第 7 条。
+
+### 2026-11-18 报告结构校验
+
+起因：真实环境验证时提交了一段非征信 HTML，结果 `status=SUCCESS`、明细全空、`error_msg` 只有一句
+「未找到信息概要表」——**一份看起来完全正常的空报告**，上游传错文件这件事被彻底掩盖。
+定下的规则：判失败看结构，不看条数。
+
+| 类别 | 改动 | 位置 |
+|---|---|---|
+| 判定 | `Parts` 新增 `sections`，扫 `.h1` 识别「信贷记录／公共记录／查询记录」三块；只认标题本身，不认正文里出现的同名字样 | `BlockSplitter` |
+| 判定 | `ParseContext` 承接 `sections`，由 `ParsePipeline` 灌入 | `ParseContext`、`ParsePipeline` |
+| 行为 | 落库前 `ensureReportStructure` 校验三块齐全，缺任一抛异常走 `markFailed`，`error_msg` 写明缺失项与已识别项 | `ParseServiceImpl` |
+| 语义 | 明确「零明细」不是失败：结构齐全的空报告照常 SUCCESS，主表仍回填报告编号等头部字段 | §5.3 |
+| 测试 | `ReportStructureTest` 5 例：两份真实样例三块齐全、非报告 HTML 零区块、正文同名字样不算结构、结构齐全但零明细仍识别、截断报告缺项准确 | `src/test/.../parser` |
+
+真实环境（MySQL 8.0.27 + Redis + 55 条规则）三场景实测：
+
+| 输入 | 状态 | 明细 |
+|---|---|---|
+| `report_all.html`（41272 字符） | SUCCESS | 12 卡 + 5 贷 + 69 查询，共 86 |
+| 仅三个 `.h1` 标题、无任何数据 | SUCCESS | 全 0，`report_no` 与姓名正常解析 |
+| `<p>这不是一份征信报告</p>` | FAILED | `无法识别为征信报告：缺少基础区块 [信贷记录, 公共记录, 查询记录]，已识别区块 []` |
+
+`verify.sh` 67 例全通过（原 62 + 新增 5），javadoc 0 error。
+
+### 2026-11-18 明细允许为空，`error_msg` 只承载失败原因
+
+起因：结构校验上线后，一份结构齐全、零明细的合法空报告得到 `status=SUCCESS` +
+`error_msg="未找到信息概要表，跳过汇总回填"`——后台展示把降级提示当成了错误。
+定下的口径：**各类明细为空都是正常业务结果，后台直接展示原始 HTML 报告，不应出现任何错误**。
+
+| 类别 | 改动 | 位置 |
+|---|---|---|
+| 语义 | `ParsePipeline` 不再把区块告警拼进 `report.errorMsg`，只汇总打一条 `WARN` | `ParsePipeline` |
+| 语义 | 找不到信息概要表（空报告的常态）由 `warn` 降级为 `debug`，不再产生告警 | `CreditSummaryParser` |
+| 语义 | 正文哈希不一致仍打 `WARN`，但只计数告警、不写 `error_msg` | `ParseServiceImpl` |
+| 契约 | 成功报告 `error_msg` 恒为 `NULL`；失败原因仍由 `markFailed` 写入 | §5.4、`ReportMapper.xml` |
+| 测试 | `ParsePipelineDiagnosticsTest` 2 例：空报告零告警且 `error_msg` 为 null；标题未识别的降级仍被采集但不污染 `error_msg` | `src/test/.../parser` |
 
 
 
