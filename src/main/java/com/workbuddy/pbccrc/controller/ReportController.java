@@ -5,6 +5,7 @@ import com.workbuddy.pbccrc.common.Result;
 import com.workbuddy.pbccrc.config.PbccrcProperties;
 import com.workbuddy.pbccrc.dao.ReportMapper;
 import com.workbuddy.pbccrc.model.dto.ReportDetailVO;
+import com.workbuddy.pbccrc.model.dto.ReportPageRequest;
 import com.workbuddy.pbccrc.model.dto.ReportQueryRequest;
 import com.workbuddy.pbccrc.model.dto.ReportVO;
 import com.workbuddy.pbccrc.model.dto.SubmitRequest;
@@ -77,6 +78,28 @@ public class ReportController {
     public Result<PageResult<ReportVO>> query(@Valid @RequestBody ReportQueryRequest req) {
         queryService.recordQuery(req);
         return Result.ok(queryService.query(req));
+    }
+
+    /**
+     * 后台管理：按可选条件分页浏览全部报告列表。
+     *
+     * @param req 查询请求，含用户名、姓名、创建时间区间及分页参数
+     * @return 包装后的分页报告列表
+     */
+    @PostMapping("/admin/reports/page")
+    public Result<PageResult<ReportVO>> page(@RequestBody ReportPageRequest req) {
+        return Result.ok(queryService.page(req));
+    }
+
+    /**
+     * 后台管理：按报告主键查看原始 HTML 报告正文。
+     *
+     * @param id 报告主键
+     * @return 包装后的报告 HTML 原文
+     */
+    @GetMapping("/admin/reports/{id}/html")
+    public Result<String> html(@PathVariable Integer id) {
+        return Result.ok(queryService.html(id));
     }
 
     /**

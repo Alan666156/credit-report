@@ -182,4 +182,51 @@ public interface ReportMapper {
      */
     @Select("SELECT id, customer_name, customer_id_card, name, cert_no, report_no, query_time, report_time, status, retry_count, error_msg, app_no, create_time FROM t_pbccrc_report WHERE id=#{id}")
     ReportVO findVOById(@Param("id") Integer id);
+
+    /**
+     * 后台管理：按可选条件统计报告总数。
+     *
+     * @param customerName    用户名，模糊匹配，可为空
+     * @param name            姓名，模糊匹配，可为空
+     * @param createTimeStart 创建时间起始，包含，可为空
+     * @param createTimeEnd   创建时间截止，包含，可为空
+     * @return 匹配记录总数
+     */
+    @Select("<script>" +
+            "SELECT COUNT(1) FROM t_pbccrc_report WHERE 1=1 " +
+            "<if test='customerName != null and customerName != \"\"'>AND customer_name LIKE CONCAT('%', #{customerName}, '%') </if>" +
+            "<if test='name != null and name != \"\"'>AND name LIKE CONCAT('%', #{name}, '%') </if>" +
+            "<if test='createTimeStart != null and createTimeStart != \"\"'>AND create_time &gt;= #{createTimeStart} </if>" +
+            "<if test='createTimeEnd != null and createTimeEnd != \"\"'>AND create_time &lt;= #{createTimeEnd} </if>" +
+            "</script>")
+    long countByCondition(@Param("customerName") String customerName,
+                          @Param("name") String name,
+                          @Param("createTimeStart") String createTimeStart,
+                          @Param("createTimeEnd") String createTimeEnd);
+
+    /**
+     * 后台管理：按可选条件分页查询报告视图。
+     *
+     * @param customerName    用户名，模糊匹配，可为空
+     * @param name            姓名，模糊匹配，可为空
+     * @param createTimeStart 创建时间起始，包含，可为空
+     * @param createTimeEnd   创建时间截止，包含，可为空
+     * @param offset          分页偏移量
+     * @param pageSize        每页条数
+     * @return 报告视图列表
+     */
+    @Select("<script>" +
+            "SELECT id, customer_name, customer_id_card, name, cert_no, report_no, query_time, report_time, status, retry_count, error_msg, app_no, create_time FROM t_pbccrc_report WHERE 1=1 " +
+            "<if test='customerName != null and customerName != \"\"'>AND customer_name LIKE CONCAT('%', #{customerName}, '%') </if>" +
+            "<if test='name != null and name != \"\"'>AND name LIKE CONCAT('%', #{name}, '%') </if>" +
+            "<if test='createTimeStart != null and createTimeStart != \"\"'>AND create_time &gt;= #{createTimeStart} </if>" +
+            "<if test='createTimeEnd != null and createTimeEnd != \"\"'>AND create_time &lt;= #{createTimeEnd} </if>" +
+            "ORDER BY create_time DESC LIMIT #{offset}, #{pageSize}" +
+            "</script>")
+    List<ReportVO> findByCondition(@Param("customerName") String customerName,
+                                   @Param("name") String name,
+                                   @Param("createTimeStart") String createTimeStart,
+                                   @Param("createTimeEnd") String createTimeEnd,
+                                   @Param("offset") int offset,
+                                   @Param("pageSize") int pageSize);
 }

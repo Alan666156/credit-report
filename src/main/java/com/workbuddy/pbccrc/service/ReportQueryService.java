@@ -3,6 +3,7 @@ package com.workbuddy.pbccrc.service;
 import com.workbuddy.pbccrc.common.BizException;
 import com.workbuddy.pbccrc.common.PageResult;
 import com.workbuddy.pbccrc.model.dto.ReportDetailVO;
+import com.workbuddy.pbccrc.model.dto.ReportPageRequest;
 import com.workbuddy.pbccrc.model.dto.ReportQueryRequest;
 import com.workbuddy.pbccrc.model.dto.ReportVO;
 
@@ -24,6 +25,23 @@ public interface ReportQueryService {
      * @return 报告视图分页结果
      */
     PageResult<ReportVO> query(ReportQueryRequest req);
+
+    /**
+     * 后台管理：按可选条件分页浏览全部报告（不要求证件号+姓名同时命中）。
+     *
+     * @param req 查询请求，含用户名、姓名、创建时间区间及分页参数
+     * @return 报告视图分页结果
+     */
+    PageResult<ReportVO> page(ReportPageRequest req);
+
+    /**
+     * 按报告主键查询原始 HTML 报告正文。
+     *
+     * @param reportId 报告主键
+     * @return 报告 HTML 原文
+     * @throws BizException 报告原文不存在时抛出「未找到」
+     */
+    String html(Integer reportId);
 
     /**
      * 记录查询流水：仅当请求带有操作人时留痕。

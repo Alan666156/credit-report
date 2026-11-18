@@ -6,12 +6,15 @@ import com.workbuddy.pbccrc.common.PageResult;
 import com.workbuddy.pbccrc.common.ResultCode;
 import com.workbuddy.pbccrc.dao.CustomerHistoryMapper;
 import com.workbuddy.pbccrc.dao.DetailQueryMapper;
+import com.workbuddy.pbccrc.dao.ReportContentMapper;
 import com.workbuddy.pbccrc.dao.ReportMapper;
 import com.workbuddy.pbccrc.model.dto.ReportDetailVO;
+import com.workbuddy.pbccrc.model.dto.ReportPageRequest;
 import com.workbuddy.pbccrc.model.dto.ReportQueryRequest;
 import com.workbuddy.pbccrc.model.dto.ReportVO;
 import com.workbuddy.pbccrc.model.entity.CustomerHistory;
 import com.workbuddy.pbccrc.model.entity.Report;
+import com.workbuddy.pbccrc.model.entity.ReportContent;
 import com.workbuddy.pbccrc.service.ReportQueryService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -34,6 +37,7 @@ public class ReportQueryServiceImpl implements ReportQueryService {
     private final ReportMapper reportMapper;
     private final DetailQueryMapper detailQueryMapper;
     private final CustomerHistoryMapper customerHistoryMapper;
+    private final ReportContentMapper reportContentMapper;
 
     /**
      * 构造方法，由 Spring 注入依赖。
@@ -41,12 +45,15 @@ public class ReportQueryServiceImpl implements ReportQueryService {
      * @param reportMapper          报告主表数据访问对象
      * @param detailQueryMapper     明细查询数据访问对象
      * @param customerHistoryMapper 客户查询历史数据访问对象
+     * @param reportContentMapper   报告原文数据访问对象
      */
     public ReportQueryServiceImpl(ReportMapper reportMapper, DetailQueryMapper detailQueryMapper,
-                                  CustomerHistoryMapper customerHistoryMapper) {
+                                  CustomerHistoryMapper customerHistoryMapper,
+                                  ReportContentMapper reportContentMapper) {
         this.reportMapper = reportMapper;
         this.detailQueryMapper = detailQueryMapper;
         this.customerHistoryMapper = customerHistoryMapper;
+        this.reportContentMapper = reportContentMapper;
     }
 
     /**
@@ -67,6 +74,42 @@ public class ReportQueryServiceImpl implements ReportQueryService {
         List<ReportVO> list = reportMapper.findByCustomer(req.getCustomerIdCard(),
                 req.getCustomerName(), offset, size);
         return PageResult.of(total, page, size, list);
+    }
+
+    /**
+     * 后台管理：按可选条件分页浏览全部报告。
+     *
+     * @param req 查询请求，含用户名、姓名、创建时间区间及分页参数
+     * @return 报告视图分页结果
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public PageResult<ReportVO> page(ReportPageRequest req) {
+        int page = req.getPageNum() == null ? 1 : Math.max(req.getPageNum(), 1);
+        int size = req.getPageSize() == null ? 10 : Math.min(Math.max(req.getPageSize(), 1), 100);
+        int offset = (page - 1) * size;
+        long total = reportMapper.countByCondition(req.getCustomerName(), req.getName(),
+                req.getCreateTimeStart(), req.getCreateTimeEnd());
+        List<ReportVO> list = reportMapper.findByCondition(req.getCustomerName(), req.getName(),
+                req.getCreateTimeStart(), req.getCreateTimeEnd(), offset, size);
+        return PageResult.of(total, page, size, list);
+    }
+
+    /**
+     * 按报告主键查询原始 HTML 报告正文。
+     *
+     * @param reportId 报告主键
+     * @return 报告 HTML 原文
+     * @throws BizException 报告原文不存在时抛出「未找到」
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public String html(Integer reportId) {
+        ReportContent content = reportContentMapper.findByReportId(reportId);
+        if (content == null || content.getContent() == null) {
+            throw new BizException(ResultCode.NOT_FOUND);
+        }
+        return content.getContent();
     }
 
     /**
